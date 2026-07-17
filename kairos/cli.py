@@ -124,6 +124,8 @@ def cli(ctx):
     """Kairos — personal workflow orchestrator."""
     ensure_dirs()
     if ctx.invoked_subcommand is None:
+        click.echo(ctx.get_help())
+        click.echo()
         _show_daemon_status()
 
 
@@ -516,7 +518,7 @@ def config(quiet_window: str | None):
 # ── daemon-status ─────────────────────────────────────────────────
 
 def _show_daemon_status():
-    """Print daemon status to stdout."""
+    """Print daemon status to stdout with color."""
     from kairos.daemon import is_daemon_running, read_heartbeat
     from kairos.config import DAEMON_HEARTBEAT_MAX_AGE
     from datetime import datetime
@@ -525,11 +527,11 @@ def _show_daemon_status():
     hb = read_heartbeat()
 
     if not running:
-        click.echo("Daemon: stopped")
+        click.echo(click.style("Daemon: stopped", fg="red"))
         return
 
     if hb is None:
-        click.echo("Daemon: running (no heartbeat data yet)")
+        click.echo(click.style("Daemon: running (no heartbeat data yet)", fg="green"))
         return
 
     try:
@@ -537,14 +539,24 @@ def _show_daemon_status():
         age = (datetime.now() - hb_time).total_seconds()
         pid = hb.get("pid", "?")
         if age < DAEMON_HEARTBEAT_MAX_AGE:
-            click.echo(f"Daemon: running (PID {pid}, last heartbeat {age:.0f}s ago)")
+            click.echo(
+                click.style(
+                    f"Daemon: running (PID {pid}, last heartbeat {age:.0f}s ago)",
+                    fg="green",
+                )
+            )
         else:
             click.echo(
-                f"Daemon: stale/likely dead (PID {pid}, "
-                f"last heartbeat {age:.0f}s ago — >{DAEMON_HEARTBEAT_MAX_AGE}s threshold)"
+                click.style(
+                    f"Daemon: stale/likely dead (PID {pid}, "
+                    f"last heartbeat {age:.0f}s ago — >{DAEMON_HEARTBEAT_MAX_AGE}s threshold)",
+                    fg="red",
+                )
             )
     except (KeyError, ValueError) as e:
-        click.echo(f"Daemon: running (corrupt heartbeat: {e})")
+        click.echo(
+            click.style(f"Daemon: running (corrupt heartbeat: {e})", fg="yellow")
+        )
 
 
 @cli.command(name="daemon-status")
