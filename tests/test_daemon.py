@@ -89,12 +89,12 @@ def test_wrong_weekday_no_trigger():
     assert len(due) == 0
 
 
-def test_no_duplicate_notification():
+def test_heads_up_generated_once_within_window():
     now = datetime(2026, 7, 17, 8, 55, 0)
     s = _session("morning", time="09:00", days=["fri"])
-    notified = {"morning_2026-07-17"}
-    due = get_due_sessions([s], now, QuietHoursConfig(), notified)
-    assert len(due) == 0
+    due = get_due_sessions([s], now, QuietHoursConfig(), set())
+    assert len(due) == 1
+    assert due[0].kind == "heads_up"
 
 
 def test_multiple_sessions_due():

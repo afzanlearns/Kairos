@@ -100,7 +100,17 @@ class WidgetBase(QFrame):
 
 class HeadsUpWidget(WidgetBase):
     def __init__(self, session: Session, on_open_now, on_snooze, parent=None):
-        title = f"{session.name} — in 5 min" if session.schedule.time else f"{session.name}"
+        if session.schedule.time:
+            from datetime import datetime
+            try:
+                h, m = session.schedule.time.split(":")
+                sched = datetime.now().replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+                mins = max(1, int((sched - datetime.now()).total_seconds() // 60))
+                title = f"{session.name} — in {mins} min"
+            except Exception:
+                title = f"{session.name}"
+        else:
+            title = f"{session.name}"
         super().__init__(title, parent=parent)
 
         if session.note:

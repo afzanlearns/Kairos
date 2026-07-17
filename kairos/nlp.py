@@ -321,6 +321,8 @@ def parse_line(line: str) -> ParsedLine:
         for kw in ["remind me", "reminder", "don't forget", "make sure", "remember", "regarding", "about", "set a", "set an", "to"]:
             text = re.sub(r'\b' + re.escape(kw) + r'\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\s+', ' ', text).strip().strip(",").strip(".").strip()
+        # Strip trailing prepositions left after keyword removal
+        text = re.sub(r'\s+(?:at|for|on|in|by|with|about)\s*$', '', text, flags=re.IGNORECASE).strip()
         if not text or len(text) < 3 or text.lower() in ("to", "set", "a", "an", "the", "for", "set a", "remind"):
             text = raw
 

@@ -68,9 +68,6 @@ def get_due_sessions(
         return due
 
     for session in sessions:
-        key = f"{session.name}_{today_str}"
-        if key in notified_set:
-            continue
 
         schedule = session.schedule
         run_today = session.last_run is not None and session.last_run.startswith(today_str)
