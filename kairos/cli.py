@@ -1,0 +1,563 @@
+from __future__ import annotations
+
+import sys
+import logging
+from datetime import datetime
+
+import click
+
+from kairos.config import (
+    VALID_APP_TYPES, INVALID_FS_CHARS, ensure_dirs, APP_MAPPING_PATH,
+    STOPWORDS_PATH, DEFAULT_APP_MAPPING, DEFAULT_STOPWORDS,
+)
+from kairos.models import Session, AppItem, TodoItem, ScheduleConfig, SessionLog
+from kairos.storage import (
+    session_exists, load_session, save_session, list_sessions,
+    create_empty_session,
+)
+from kairos.launcher import launch_session
+from kairos.nlp import parse_line, StageResult
+from kairos.analytics import get_stats
+
+logger = logging.getLogger(__name__)
+
+
+def _validate_name(name: str) -> None:
+    if not name or not name.strip():
+        raise click.UsageError("Session name cannot be empty.")
+    if any(c in name for c in INVALID_FS_CHARS):
+        raise click.UsageError(
+            f"Session name contains invalid filesystem characters: {INVALID_FS_CHARS}"
+        )
+
+
+def _require_session(name: str) -> Session:
+    session = load_session(name)
+    if session is None:
+        raise click.UsageError(
+            f"Session '{name}' does not exist. Use 'kairos new {name}' first."
+        )
+    return session
+
+
+def _format_time(dt_str: str | None) -> str:
+    if dt_str is None:
+        return "never"
+    return dt_str
+
+
+def _print_session(session: Session) -> None:
+    click.echo(f"Session: {session.name}")
+    click.echo(f"  Created: {session.created_at}")
+    click.echo(f"  Last run: {_format_time(session.last_run)}")
+    click.echo(f"  Note: {session.note or '(none)'}")
+    if session.schedule.time or session.schedule.on_boot:
+        parts = []
+        if session.schedule.time:
+            parts.append(f"at {session.schedule.time}")
+        if session.schedule.days:
+            parts.append(f"on {', '.join(session.schedule.days)}")
+        if session.schedule.on_boot:
+            parts.append("on boot")
+        click.echo(f"  Schedule: {' '.join(parts)}")
+    else:
+        click.echo("  Schedule: (none)")
+    click.echo(f"\n  Apps ({len(session.apps)}):")
+    for i, app in enumerate(session.apps):
+        desc = app.type
+        if app.path:
+            desc += f" ({app.path})"
+        if app.urls:
+            desc += f" -> {', '.join(app.urls)}"
+        if app.run:
+            desc += f" run: {app.run}"
+        if app.cwd:
+            desc += f" cwd: {app.cwd}"
+        if app.playlist:
+            desc += f" playlist: {app.playlist}"
+        click.echo(f"    [{i}] {desc}")
+    click.echo(f"\n  Todos ({len(session.todos)}):")
+    for i, todo in enumerate(session.todos):
+        status = "x" if todo.completed_today else " "
+        click.echo(f"    [{i}] [{status}] {todo.text}")
+    click.echo(f"\n  History ({len(session.history)}):")
+    for h in session.history[-5:]:
+        click.echo(f"    {h.date}: {h.status}")
+    click.echo()
+
+
+# ── CLI group ────────────────────────────────────────────────────
+
+
+@click.group()
+def cli():
+    """Kairos — personal workflow orchestrator."""
+    ensure_dirs()
+
+
+# ── new ───────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+def new(name: str):
+    """Create a new empty session."""
+    _validate_name(name)
+    try:
+        create_empty_session(name)
+        click.echo(f"Created session '{name}'.")
+    except FileExistsError as e:
+        raise click.UsageError(str(e)) from e
+
+
+# ── add ───────────────────────────────────────────────────────────
+
+
+def _parse_app_type(ctx, param, value):
+    if value is not None and value not in VALID_APP_TYPES:
+        raise click.BadParameter(
+            f"Invalid app type '{value}'. Valid types: {', '.join(sorted(VALID_APP_TYPES))}"
+        )
+    return value
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--code", "code_path", default=None, help="Path to open in VS Code")
+@click.option("--terminal", "is_terminal", is_flag=True, help="Add a terminal")
+@click.option("--cwd", default=None, help="Working directory for terminal")
+@click.option("--run", default=None, help="Command to run in terminal")
+@click.option("--chrome", "chrome_urls", multiple=True, help="URL(s) to open in Chrome")
+@click.option("--spotify", "spotify_playlist", default=None, flag_value="", help="Open Spotify")
+@click.option("--todo", default=None, help="Add a todo item")
+def add(
+    name: str,
+    code_path: str | None,
+    is_terminal: bool,
+    cwd: str | None,
+    run: str | None,
+    chrome_urls: tuple[str, ...],
+    spotify_playlist: str | None,
+    todo: str | None,
+):
+    """Append an app or todo to a session."""
+    session = _require_session(name)
+
+    if code_path is not None:
+        session.apps.append(AppItem(type="code", path=code_path))
+        click.echo(f"Added 'code' app to '{name}'.")
+    elif is_terminal:
+        session.apps.append(AppItem(type="terminal", cwd=cwd, run=run))
+        click.echo(f"Added 'terminal' app to '{name}'.")
+    elif chrome_urls:
+        session.apps.append(AppItem(type="chrome", urls=list(chrome_urls)))
+        click.echo(f"Added 'chrome' app ({len(chrome_urls)} URL(s)) to '{name}'.")
+    elif spotify_playlist is not None:
+        session.apps.append(
+            AppItem(type="spotify", playlist=spotify_playlist or None)
+        )
+        click.echo(f"Added 'spotify' app to '{name}'.")
+    elif todo is not None:
+        session.todos.append(TodoItem(text=todo))
+        click.echo(f"Added todo to '{name}'.")
+    else:
+        raise click.UsageError(
+            "Specify one of: --code, --terminal, --chrome, --spotify, --todo"
+        )
+
+    save_session(session)
+
+
+# ── list ──────────────────────────────────────────────────────────
+
+
+@cli.command(name="list")
+def list_():
+    """List all defined sessions."""
+    names = list_sessions()
+    if not names:
+        click.echo("No sessions defined. Use 'kairos new <name>' to create one.")
+        return
+    for name in names:
+        session = load_session(name)
+        if session is None:
+            continue
+        app_count = len(session.apps)
+        todo_count = len(session.todos)
+        schedule = ""
+        if session.schedule.time:
+            schedule = f" @ {session.schedule.time}"
+            if session.schedule.days:
+                schedule += f" ({', '.join(session.schedule.days)})"
+        if session.schedule.on_boot:
+            schedule += " [boot]"
+        click.echo(f"  {name:<24} {app_count} app(s), {todo_count} todo(s){schedule}")
+
+
+# ── show ──────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+def show(name: str):
+    """Pretty-print a session's full contents."""
+    session = _require_session(name)
+    _print_session(session)
+
+
+# ── edit ──────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--remove-app", default=None, help="Index of app to remove")
+@click.option("--remove-todo", default=None, help="Index of todo to remove")
+def edit(name: str, remove_app: str | None, remove_todo: str | None):
+    """Remove an app or todo from a session."""
+    session = _require_session(name)
+
+    if remove_app is not None:
+        try:
+            idx = int(remove_app)
+            removed = session.apps.pop(idx)
+            click.echo(f"Removed app [{idx}]: {removed.type}")
+        except (ValueError, IndexError) as e:
+            raise click.UsageError(f"Invalid app index: {e}") from e
+
+    if remove_todo is not None:
+        try:
+            idx = int(remove_todo)
+            removed = session.todos.pop(idx)
+            click.echo(f"Removed todo [{idx}]: {removed.text}")
+        except (ValueError, IndexError) as e:
+            raise click.UsageError(f"Invalid todo index: {e}") from e
+
+    if remove_app is None and remove_todo is None:
+        raise click.UsageError("Specify --remove-app <index> or --remove-todo <index>")
+
+    save_session(session)
+
+
+# ── note ──────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+@click.argument("text")
+def note(name: str, text: str):
+    """Set or overwrite a session's note."""
+    session = _require_session(name)
+    session.note = text
+    save_session(session)
+    click.echo(f"Note set for '{name}'.")
+
+
+# ── start ─────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+def start(name: str):
+    """Manually launch every app in a session."""
+    session = _require_session(name)
+
+    if not session.apps:
+        click.echo(f"Session '{name}' has no apps configured — nothing to launch.")
+        return
+
+    click.echo(f"Launching session '{name}'...")
+    launch_session(session.name, session.apps)
+
+    if session.note:
+        click.echo(f"\n  Note: {session.note}")
+
+    pending = [t for t in session.todos if not t.completed_today]
+    if pending:
+        click.echo(f"\n  Pending todos ({len(pending)}):")
+        for t in pending:
+            click.echo(f"    [ ] {t.text}")
+
+    session.last_run = datetime.now().isoformat(timespec="seconds")
+    session.history.append(
+        SessionLog(
+            date=datetime.now().isoformat(timespec="seconds").split("T")[0],
+            status="launched",
+            launched_at=datetime.now().isoformat(timespec="seconds"),
+        )
+    )
+    save_session(session)
+
+
+# ── done ──────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+@click.argument("todo_text")
+def done(name: str, todo_text: str):
+    """Mark a todo as completed (fuzzy match)."""
+    session = _require_session(name)
+    matched = [
+        t for t in session.todos
+        if todo_text.lower() in t.text.lower()
+    ]
+    if not matched:
+        raise click.UsageError(
+            f"No todo matching '{todo_text}' found in session '{name}'."
+        )
+    for t in matched:
+        t.completed_today = True
+    save_session(session)
+    if len(matched) == 1:
+        click.echo(f"Marked todo '{matched[0].text}' as done.")
+    else:
+        click.echo(f"Marked {len(matched)} todos as done (matched '{todo_text}').")
+
+
+# ── schedule ──────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+@click.option("--at", "at_time", default=None, help="Time in HH:MM format")
+@click.option("--days", default=None, help="Comma-separated weekdays (mon,tue,...)")
+@click.option("--on-boot", "on_boot", is_flag=True, default=None, help="Run on boot")
+def schedule(name: str, at_time: str | None, days: str | None, on_boot: bool | None):
+    """Set scheduling for a session."""
+    session = _require_session(name)
+    if at_time is not None:
+        session.schedule.time = at_time
+    if days is not None:
+        session.schedule.days = [d.strip().lower() for d in days.split(",") if d.strip()]
+    if on_boot is not None:
+        session.schedule.on_boot = on_boot
+    save_session(session)
+    click.echo(f"Schedule updated for '{name}'.")
+
+
+# ── today ─────────────────────────────────────────────────────────
+
+
+@cli.command(name="today")
+def today():
+    """List sessions scheduled for today."""
+    from datetime import date
+    weekday_map = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    today_str = weekday_map[date.today().weekday()]
+    sessions = []
+    for name in list_sessions():
+        s = load_session(name)
+        if s is None:
+            continue
+        if today_str in s.schedule.days or s.schedule.on_boot:
+            sessions.append(s)
+    sessions.sort(key=lambda s: s.schedule.time or "")
+    if not sessions:
+        click.echo("Nothing scheduled for today.")
+        return
+    click.echo(f"Scheduled for today ({today_str.capitalize()}):")
+    for s in sessions:
+        status = "pending"
+        if s.last_run and s.last_run.startswith(str(date.today())):
+            status = "launched"
+        elif s.history and s.history[-1].date == str(date.today()) and s.history[-1].status == "skipped":
+            status = "skipped"
+        boot = " [boot]" if s.schedule.on_boot else ""
+        click.echo(f"  {s.schedule.time or '--:--'}{boot}  {s.name:<24} {status}")
+
+
+# ── next ──────────────────────────────────────────────────────────
+
+
+@cli.command(name="next")
+def next_():
+    """Show the next upcoming session."""
+    from datetime import datetime, date, timedelta
+    weekday_map = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    now = datetime.now()
+    today_str = weekday_map[date.today().weekday()]
+    upcoming = []
+    overdue = []
+    for name in list_sessions():
+        s = load_session(name)
+        if s is None or not s.schedule.time:
+            continue
+        if not s.schedule.days and not s.schedule.on_boot:
+            continue
+        if s.schedule.on_boot:
+            continue
+        if today_str not in s.schedule.days:
+            continue
+        try:
+            h, m = s.schedule.time.split(":")
+            sched_dt = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+        except (ValueError, AttributeError):
+            continue
+        if sched_dt < now:
+            overdue.append((s, sched_dt))
+        else:
+            upcoming.append((s, sched_dt))
+    upcoming.sort(key=lambda x: x[1])
+    overdue.sort(key=lambda x: x[1])
+    if upcoming:
+        s, dt = upcoming[0]
+        delta = dt - now
+        mins = int(delta.total_seconds() // 60)
+        click.echo(f"Next: {s.name} at {s.schedule.time} (in ~{mins} min)")
+    else:
+        click.echo("No upcoming sessions today.")
+    if overdue:
+        for s, dt in overdue:
+            delta = now - dt
+            mins = int(delta.total_seconds() // 60)
+            click.echo(f"Overdue: {s.name} (was due {mins} min ago)")
+
+
+# ── skip ──────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+def skip(name: str):
+    """Mark a session as skipped for today (no launch)."""
+    session = _require_session(name)
+    today_str = datetime.now().isoformat(timespec="seconds").split("T")[0]
+    session.history.append(
+        SessionLog(date=today_str, status="skipped")
+    )
+    save_session(session)
+    click.echo(f"Session '{name}' skipped for today.")
+
+
+# ── stats ─────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.argument("name")
+def stats(name: str):
+    """Show analytics summary for a session."""
+    session = _require_session(name)
+    result = get_stats(session.name, session.history)
+    click.echo(f"Stats for '{session.name}':")
+    click.echo(f"  Run {result['run_days']}/{result['total_days']} days in tracked period")
+    click.echo(f"  Launched: {result['launched']}, Skipped: {result['skipped']}, Missed: {result['missed']}")
+    click.echo(f"  Avg todos completed: {result['avg_todos_completed']:.1f}")
+
+
+# ── config ────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.option("--quiet", "quiet_window", default=None, help="Quiet hours range HH:MM-HH:MM")
+def config(quiet_window: str | None):
+    """Set global daemon configuration."""
+    from kairos.config import QUIET_HOURS_PATH
+    from kairos.models import QuietHoursConfig
+    if quiet_window:
+        parts = quiet_window.split("-")
+        if len(parts) != 2:
+            raise click.UsageError("Use format HH:MM-HH:MM")
+        qh = QuietHoursConfig(start=parts[0], end=parts[1])
+        QUIET_HOURS_PATH.write_text(qh.model_dump_json(indent=2), encoding="utf-8")
+        click.echo(f"Quiet hours set: {quiet_window}")
+
+
+# ── parse ─────────────────────────────────────────────────────────
+
+
+@cli.command()
+@click.option("--file", "file_path", default=None, help="Read input from a text file")
+def parse(file_path: str | None):
+    """Parse natural language input into session items."""
+    from kairos.nlp import parse_session_input
+    from kairos.storage import session_exists
+
+    if file_path:
+        text = open(file_path, encoding="utf-8").read()
+    elif not sys.stdin.isatty():
+        lines = [l.rstrip("\r\n") for l in sys.stdin]
+        text = "\n".join(lines)
+    else:
+        click.echo("Enter session description (Ctrl+Z then Enter to finish):")
+        lines = []
+        try:
+            for line in sys.stdin:
+                lines.append(line.rstrip("\n"))
+        except KeyboardInterrupt:
+            click.echo("\nAborted.")
+            return
+        text = "\n".join(lines)
+
+    if not text.strip():
+        click.echo("No input provided.")
+        return
+
+    click.echo("\nParsing...")
+    result = parse_session_input(text)
+
+    # Show structured breakdown
+    click.echo("\nParsed:")
+    for item in result.items:
+        prefix = "?" if item.confidence == "low" else "+"
+        time_str = f"{item.time or '--:--':>8}"
+        if item.kind == "app_launch":
+            click.echo(f"  {prefix} {time_str}  - {item.app or '?'} -> {item.target or '(default)'}")
+        elif item.kind == "todo":
+            click.echo(f"  {prefix} {time_str}  - Reminder: {item.text}")
+        elif item.kind == "boot_reminder":
+            click.echo(f"  {prefix} {'On boot':>8}  - Reminder: {item.text}")
+        else:
+            click.echo(f"  {prefix} Unparsed: \"{item.raw}\" - please edit manually")
+
+    unparsed = [i for i in result.items if i.kind == "unparsed"]
+
+    # Ask for session name
+    click.echo()
+    session_name = click.prompt("Save all to session named", default="")
+    if not session_name:
+        click.echo("Aborted.")
+        return
+
+    _validate_name(session_name)
+
+    # Confirm
+    if unparsed:
+        click.echo(f"\nWarning: {len(unparsed)} line(s) could not be parsed.")
+    if click.confirm(f"Save parsed items to session '{session_name}'?", default=True):
+        if session_exists(session_name):
+            session = load_session(session_name)
+            if session is None:
+                return
+        else:
+            session = create_empty_session(session_name)
+
+        for item in result.items:
+            if item.kind == "app_launch":
+                app_type = item.app or "chrome"
+                if app_type not in VALID_APP_TYPES:
+                    app_type = "chrome"
+                session.apps.append(AppItem(type=app_type, target=item.target))
+            elif item.kind == "todo":
+                session.todos.append(TodoItem(text=item.text or item.raw))
+            elif item.kind == "boot_reminder":
+                session.todos.append(TodoItem(text=item.text or item.raw))
+
+        save_session(session)
+        click.echo(f"Saved {len(result.items)} item(s) to session '{session_name}'.")
+    else:
+        click.echo("Aborted.")
+
+
+# ── entry ─────────────────────────────────────────────────────────
+
+
+def main():
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    )
+    cli()
+
+
+if __name__ == "__main__":
+    main()
