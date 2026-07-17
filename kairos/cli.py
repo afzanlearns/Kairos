@@ -23,6 +23,34 @@ from kairos.widget import show_widgets_cli
 logger = logging.getLogger(__name__)
 
 
+def _auto_session_name(item, used_names: set[str] | None = None) -> str:
+    """Derive a session name from a parsed line's content."""
+    from kairos.storage import list_sessions
+
+    existing = set(list_sessions()) | (used_names or set())
+
+    if item.kind == "app_launch":
+        base = (item.target or item.app or "app").replace(".com", "").replace(".", "_").strip()
+    elif item.kind == "todo":
+        base = (item.text or item.raw or "reminder")[:30].strip()
+    elif item.kind == "boot_reminder":
+        base = (item.text or item.raw or "boot")[:30].strip()
+    else:
+        base = "task"
+
+    base = base.strip(" ,.!?;:").strip()
+    if not base or len(base) < 2:
+        base = "task"
+
+    if base not in existing:
+        return base
+
+    counter = 2
+    while f"{base} ({counter})" in existing:
+        counter += 1
+    return f"{base} ({counter})"
+
+
 def _validate_name(name: str) -> None:
     if not name or not name.strip():
         raise click.UsageError("Session name cannot be empty.")
@@ -554,76 +582,53 @@ def parse(file_path: str | None):
             # Try parsing as a comma-separated list of day abbreviations
             item.days = [d.strip().lower()[:3] for d in choice_lower.replace(" and ", ",").split(",") if d.strip()]
 
-    # Ask for session name (re-prompt until non-empty or explicit abort)
-    click.echo()
-    while True:
-        session_name = click.prompt("Save all to session named", default="")
-        if session_name.strip():
-            break
-        click.echo("Session name cannot be empty. Enter a name or press Ctrl+C to abort.")
-
-    _validate_name(session_name)
-
-    # Confirm
     if unparsed:
         click.echo(f"\nWarning: {len(unparsed)} line(s) could not be parsed.")
-    if click.confirm(f"Save parsed items to session '{session_name}'?", default=True):
-        if session_exists(session_name):
-            session = load_session(session_name)
-            if session is None:
-                return
-        else:
-            session = create_empty_session(session_name)
 
-        # Build schedule from parsed items (merge all schedules from all lines)
-        merged_days: list[str] = []
-        merged_time: Optional[str] = None
-        merged_on_boot = False
-        for item in result.items:
-            if item.kind == "unparsed":
-                continue
-            if item.on_boot:
-                merged_on_boot = True
-            if item.time:
-                if merged_time is None or item.time < merged_time:
-                    merged_time = item.time
-            if item.days is not None:
-                for d in item.days:
-                    if d not in merged_days:
-                        merged_days.append(d)
+    # Save each item as its own session, auto-named from content
+    click.echo()
+    saved_count = 0
+    used_names: set[str] = set()
+    for item in result.items:
+        if item.kind == "unparsed":
+            continue
 
-        if merged_days or merged_time or merged_on_boot:
+        session_name = _auto_session_name(item, used_names)
+        used_names.add(session_name)
+        _validate_name(session_name)
+
+        app_type = item.app or "chrome" if item.kind == "app_launch" else None
+        if app_type and app_type not in VALID_APP_TYPES:
+            app_type = "chrome"
+
+        session = create_empty_session(session_name)
+
+        if item.kind == "app_launch":
+            session.apps.append(AppItem(type=app_type, target=item.target))
+        elif item.kind in ("todo", "boot_reminder"):
+            session.todos.append(TodoItem(text=item.text or item.raw))
+
+        if item.time or item.days is not None or item.on_boot:
             session.schedule = ScheduleConfig(
-                time=merged_time,
-                days=merged_days,
-                on_boot=merged_on_boot,
+                time=item.time,
+                days=item.days or [],
+                on_boot=item.on_boot,
             )
 
-        for item in result.items:
-            if item.kind == "app_launch":
-                app_type = item.app or "chrome"
-                if app_type not in VALID_APP_TYPES:
-                    app_type = "chrome"
-                session.apps.append(AppItem(type=app_type, target=item.target))
-            elif item.kind == "todo":
-                session.todos.append(TodoItem(text=item.text or item.raw))
-            elif item.kind == "boot_reminder":
-                session.todos.append(TodoItem(text=item.text or item.raw))
-
         save_session(session)
-        click.echo(f"Saved {len(result.items)} item(s) to session '{session_name}'.")
+        saved_count += 1
 
-        next_steps = []
-        if session.schedule.time:
-            next_steps.append(f"daemon will launch at {session.schedule.time}")
-        if session.schedule.on_boot:
-            next_steps.append("launches on boot")
-        if next_steps:
-            click.echo(f"  -> {', '.join(next_steps)}")
-        else:
-            click.echo("  -> run 'kairos start {name}' to launch now".format(name=session_name))
+        schedule_hint = ""
+        if item.time:
+            schedule_hint = f" @ {item.time}"
+        if item.on_boot:
+            schedule_hint = " [boot]"
+        click.echo(f"  + {session_name}{schedule_hint}")
+
+    if saved_count:
+        click.echo(f"\nSaved {saved_count} session(s). Daemon will launch each at its scheduled time.")
     else:
-        click.echo("Aborted.")
+        click.echo("Nothing to save.")
 
 
 # ── now ────────────────────────────────────────────────────────────
