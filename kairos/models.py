@@ -62,3 +62,6 @@ class ParsedLine(BaseModel):
     text: Optional[str] = None
     confidence: str = "high"  # "high" or "low"
     raw: str = ""
+    days: Optional[list[str]] = None  # extracted weekdays, None if not specified
+    on_boot: bool = False
+    needs_recurrence_confirmation: bool = False

@@ -111,6 +111,26 @@ CASES = [
         "open foobarapp",
         {"kind": "app_launch", "app": None, "confidence": "low"},
     ),
+    # Recurrence: every day with time
+    (
+        "Remind me to get a haircut every day at 7pm",
+        {"kind": "todo", "time": "19:00", "days": ["mon","tue","wed","thu","fri","sat","sun"]},
+    ),
+    # Recurrence: inline weekday list
+    (
+        "Open vscode every Mon Wed Fri at 9am",
+        {"kind": "app_launch", "app": "code", "time": "09:00", "days": ["mon","wed","fri"]},
+    ),
+    # Boot reminder still works (recurrence extraction must not eat keywords before classification)
+    (
+        "Bootup reminder regarding GitHub check",
+        {"kind": "boot_reminder", "on_boot": True},
+    ),
+    # Time present but no recurrence => needs confirmation
+    (
+        "Remind me to call the dentist at 6pm",
+        {"kind": "todo", "time": "18:00", "days": None, "needs_recurrence_confirmation": True},
+    ),
 ]
 
 
@@ -135,4 +155,16 @@ def test_all_cases():
         if "target" in expected:
             assert result.target == expected["target"], (
                 f"Input: {input_text!r} — expected target={expected['target']}, got {result.target}"
+            )
+        if "days" in expected:
+            assert result.days == expected["days"], (
+                f"Input: {input_text!r} — expected days={expected['days']}, got {result.days}"
+            )
+        if "on_boot" in expected:
+            assert result.on_boot == expected["on_boot"], (
+                f"Input: {input_text!r} — expected on_boot={expected['on_boot']}, got {result.on_boot}"
+            )
+        if "needs_recurrence_confirmation" in expected:
+            assert result.needs_recurrence_confirmation == expected["needs_recurrence_confirmation"], (
+                f"Input: {input_text!r} — expected needs_recurrence_confirmation={expected['needs_recurrence_confirmation']}, got {result.needs_recurrence_confirmation}"
             )

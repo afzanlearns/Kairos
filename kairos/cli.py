@@ -503,17 +503,41 @@ def parse(file_path: str | None):
     click.echo("\nParsed:")
     for item in result.items:
         prefix = "?" if item.confidence == "low" else "+"
-        time_str = f"{item.time or '--:--':>8}"
+        schedule_str = _format_schedule_for_preview(item)
         if item.kind == "app_launch":
-            click.echo(f"  {prefix} {time_str}  - {item.app or '?'} -> {item.target or '(default)'}")
+            click.echo(f"  {prefix} {schedule_str:>20}  - {item.app or '?'} -> {item.target or '(default)'}")
         elif item.kind == "todo":
-            click.echo(f"  {prefix} {time_str}  - Reminder: {item.text}")
+            click.echo(f"  {prefix} {schedule_str:>20}  - Reminder: {item.text}")
         elif item.kind == "boot_reminder":
-            click.echo(f"  {prefix} {'On boot':>8}  - Reminder: {item.text}")
+            click.echo(f"  {prefix} {'On boot':>20}  - Reminder: {item.text}")
         else:
             click.echo(f"  {prefix} Unparsed: \"{item.raw}\" - please edit manually")
 
     unparsed = [i for i in result.items if i.kind == "unparsed"]
+    need_recurrence = [i for i in result.items if i.needs_recurrence_confirmation]
+
+    # Prompt for recurrence on items that need it
+    for item in need_recurrence:
+        click.echo()
+        click.echo(f"  No repeat specified for: \"{item.raw}\"")
+        choice = click.prompt(
+            "  Repeat this? [Once / Daily / Choose days]",
+            default="Once",
+        )
+        choice_lower = choice.strip().lower()
+        if choice_lower in ("daily", "d"):
+            item.days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+        elif choice_lower in ("once", "o", ""):
+            item.days = []
+        elif choice_lower.startswith("choose") or choice_lower.startswith("c"):
+            days_input = click.prompt(
+                "  Enter weekdays (e.g. mon,wed,fri)",
+                default="",
+            )
+            item.days = [d.strip().lower()[:3] for d in days_input.split(",") if d.strip()]
+        else:
+            # Try parsing as a comma-separated list of day abbreviations
+            item.days = [d.strip().lower()[:3] for d in choice_lower.replace(" and ", ",").split(",") if d.strip()]
 
     # Ask for session name (re-prompt until non-empty or explicit abort)
     click.echo()
@@ -536,6 +560,29 @@ def parse(file_path: str | None):
         else:
             session = create_empty_session(session_name)
 
+        # Build schedule from parsed items (merge all schedules from all lines)
+        merged_days: list[str] = []
+        merged_time: Optional[str] = None
+        merged_on_boot = False
+        for item in result.items:
+            if item.kind == "unparsed":
+                continue
+            if item.on_boot:
+                merged_on_boot = True
+            if item.time:
+                merged_time = item.time
+            if item.days is not None:
+                for d in item.days:
+                    if d not in merged_days:
+                        merged_days.append(d)
+
+        if merged_days or merged_time or merged_on_boot:
+            session.schedule = ScheduleConfig(
+                time=merged_time,
+                days=merged_days,
+                on_boot=merged_on_boot,
+            )
+
         for item in result.items:
             if item.kind == "app_launch":
                 app_type = item.app or "chrome"
@@ -551,6 +598,33 @@ def parse(file_path: str | None):
         click.echo(f"Saved {len(result.items)} item(s) to session '{session_name}'.")
     else:
         click.echo("Aborted.")
+
+
+def _format_schedule_for_preview(item) -> str:
+    """Build a human-readable schedule label for a parsed item."""
+    from kairos.models import ParsedLine
+    if item.on_boot:
+        return "On boot"
+    parts = []
+    if item.time:
+        parts.append(item.time)
+    if item.days is not None and len(item.days) > 0:
+        if set(item.days) == {"mon", "tue", "wed", "thu", "fri", "sat", "sun"}:
+            parts.append("daily")
+        elif set(item.days) == {"mon", "tue", "wed", "thu", "fri"}:
+            parts.append("weekdays")
+        elif set(item.days) == {"sat", "sun"}:
+            parts.append("weekends")
+        else:
+            short_days = [d.capitalize()[:3] for d in item.days]
+            parts.append("/".join(short_days))
+    elif item.days is not None and len(item.days) == 0:
+        parts.append("once")
+    elif item.time and item.days is None and not item.on_boot:
+        parts.append("no repeat")
+    if parts:
+        return ", ".join(parts)
+    return ""
 
 
 # ── entry ─────────────────────────────────────────────────────────

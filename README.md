@@ -63,6 +63,15 @@ in plain English, one clause per line. It respects `$VISUAL`, then `$EDITOR`,
 and falls back to Notepad on Windows. Save and close the editor to see the
 structured breakdown, then confirm to save it as a new or existing session.
 
+The parser detects **recurrence** from phrases like `every day`, `every Mon/Wed/Fri`,
+`every weekday`, `weekend`, or `on boot`/`bootup`/`at startup`, and populates the
+session's schedule field automatically — no separate `kairos schedule` call needed.
+If a line has a time but no recurrence phrase, you'll be prompted to specify once,
+daily, or choose specific weekdays during the confirmation step.
+
+Recurrence phrases live in `~/.kairos/recurrence_phrases.json` (same pattern as
+`app_mapping.json`) — user-editable without touching Python code.
+
 Pipe input directly (no editor):
 ```
 echo -e "open vscode at 7 pm\nremind me to check email" | kairos parse
@@ -71,7 +80,8 @@ echo -e "open vscode at 7 pm\nremind me to check email" | kairos parse
 Example input saved in the editor:
 ```
 Open vscode at 7 pm
-Set a reminder for meeting at 7:30 pm
+Remind me to get a haircut every day at 7pm
+Open vscode every Mon Wed Fri at 9am
 Bootup reminder regarding GitHub check
 play youtube : https://youtube.com/watch?v=xyz at 6pm reminder
 ```
@@ -112,6 +122,7 @@ Configuration files are stored under `~/.kairos/`:
 | `$VISUAL` / `$EDITOR` | Editor used by `kairos parse` (default: Notepad) |
 | `sessions/<name>.json` | Session definitions |
 | `app_mapping.json` | Keyword-to-app mapping for NLP |
+| `recurrence_phrases.json` | Recurrence phrase patterns (daily, weekdays, etc.) |
 | `stopwords.txt` | Filler words stripped during NLP |
 | `quiet_hours.json` | Quiet hours configuration |
 | `kairos.db` | Session history/analytics |

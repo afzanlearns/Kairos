@@ -7,7 +7,11 @@ from typing import Optional
 
 import dateparser
 
-from kairos.config import APP_MAPPING_PATH, STOPWORDS_PATH, DEFAULT_APP_MAPPING, DEFAULT_STOPWORDS, ensure_dirs
+from kairos.config import (
+    APP_MAPPING_PATH, STOPWORDS_PATH, RECURRENCE_PHRASES_PATH,
+    DEFAULT_APP_MAPPING, DEFAULT_STOPWORDS, DEFAULT_RECURRENCE_PHRASES,
+    WEEKDAY_NAMES, ensure_dirs,
+)
 from kairos.models import ParsedLine
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,16 @@ def _load_app_mapping() -> dict:
         json.dumps(DEFAULT_APP_MAPPING, indent=2), encoding="utf-8"
     )
     return DEFAULT_APP_MAPPING
+
+
+def _load_recurrence_phrases() -> dict:
+    if RECURRENCE_PHRASES_PATH.exists():
+        return json.loads(RECURRENCE_PHRASES_PATH.read_text(encoding="utf-8"))
+    ensure_dirs()
+    RECURRENCE_PHRASES_PATH.write_text(
+        json.dumps(DEFAULT_RECURRENCE_PHRASES, indent=2), encoding="utf-8"
+    )
+    return DEFAULT_RECURRENCE_PHRASES
 
 
 # ── Stage 1: Strip filler words ──────────────────────────────────
@@ -90,6 +104,79 @@ def extract_time(line: str) -> tuple[Optional[str], str]:
     if parsed:
         return parsed.strftime("%H:%M"), line
     return None, line
+
+
+# ── Stage 2b: Extract recurrence (days / on_boot) ────────────────
+
+
+WEEKDAY_ABBREV = {
+    "mon": "mon", "tue": "tue", "wed": "wed",
+    "thu": "thu", "fri": "fri", "sat": "sat", "sun": "sun",
+}
+
+
+def extract_recurrence(line_lower: str, phrases: dict) -> tuple[Optional[list[str]], bool, str]:
+    """Returns (days_list, on_boot, cleaned_line_lower).
+
+    Checks for known recurrence phrases first, then parses inline
+    weekday lists (e.g. 'every Mon Wed Fri', 'on Mondays and Fridays').
+    Matched phrases are removed from the returned line so downstream
+    stages don't see them.
+    """
+    cleaned = line_lower
+
+    # 1. Check exact phrases from config
+    for phrase, config in sorted(phrases.items(), key=lambda x: -len(x[0])):
+        if phrase in cleaned:
+            cleaned = cleaned.replace(phrase, "").strip()
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            if "days" in config:
+                return config["days"], False, cleaned
+            if "on_boot" in config:
+                return None, True, cleaned
+
+    # 2. Check for inline weekday lists: "every Mon Wed Fri", "on mondays and fridays", etc.
+    #    Match patterns like: every <day1> <day2> ... / on <day1> and <day2> / <day1>, <day2>, ...
+    weekday_pattern = r"(?:every|on)\s+((?:(?:mon|tue|wed|thu|fri|sat|sun)\w*(?:\s+(?:and\s+)?|\s*,\s*)?)+)"
+    m = re.search(weekday_pattern, cleaned, re.IGNORECASE)
+    if m:
+        segment = m.group(1).lower()
+        found = []
+        for abbrev in WEEKDAY_ABBREV:
+            if abbrev in segment:
+                found.append(WEEKDAY_ABBREV[abbrev])
+        # Also check full names
+        for full_name, abbrev in WEEKDAY_NAMES.items():
+            if full_name in segment and len(full_name) > 3:
+                if abbrev not in found:
+                    found.append(abbrev)
+        if found:
+            # Deduplicate preserving order
+            seen = set()
+            deduped = [d for d in found if not (d in seen or seen.add(d))]
+            cleaned = cleaned[:m.start()] + cleaned[m.end():]
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            return deduped, False, cleaned
+
+    # Also check for weekday lists without "every" prefix, e.g. "Mondays, Wednesdays"
+    m2 = re.search(
+        r"\b((?:mon|tue|wed|thu|fri|sat|sun)\w*(?:\s+(?:and\s+)?|\s*,\s*)"
+        r"(?:mon|tue|wed|thu|fri|sat|sun)\w*)",
+        cleaned, re.IGNORECASE,
+    )
+    if m2:
+        segment = m2.group(1).lower()
+        found = []
+        for full_name, abbrev in WEEKDAY_NAMES.items():
+            if full_name in segment:
+                if abbrev not in found:
+                    found.append(abbrev)
+        if found:
+            cleaned = cleaned[:m2.start()] + cleaned[m2.end():]
+            cleaned = re.sub(r"\s+", " ", cleaned).strip()
+            return found, False, cleaned
+
+    return None, False, cleaned
 
 
 # ── Stage 3: Classify kind ───────────────────────────────────────
@@ -163,7 +250,10 @@ def _looks_like_url(s: str) -> bool:
 # ── Stage 5: Confidence ──────────────────────────────────────────
 
 
-def assess_confidence(kind: str, time_val: Optional[str], app: Optional[str], line_lower: str) -> str:
+def assess_confidence(
+    kind: str, time_val: Optional[str], app: Optional[str], line_lower: str,
+    days: Optional[list[str]] = None, on_boot: bool = False,
+) -> str:
     if kind == "unparsed":
         return "low"
     if kind == "boot_reminder":
@@ -185,6 +275,7 @@ def assess_confidence(kind: str, time_val: Optional[str], app: Optional[str], li
 def parse_line(line: str) -> ParsedLine:
     stopwords = _load_stopwords()
     mapping = _load_app_mapping()
+    recurrence_phrases = _load_recurrence_phrases()
 
     raw = line.strip()
     if not raw:
@@ -201,10 +292,17 @@ def parse_line(line: str) -> ParsedLine:
     time_val, line_for_stages = extract_time(cleaned)
     line_for_stages_lower = line_for_stages.lower()
 
-    # Stage 3: classify (on time-free text)
+    # Stage 3: classify BEFORE recurrence extraction so boot keywords are still present
     kind = classify_kind(line_for_stages_lower, mapping)
 
-    # Stage 4: extract app/target (on time-free text so colons in HH:MM don't leak)
+    # Stage 2b: extract recurrence (days / on_boot) — runs after classification
+    # so boot keywords survive for kind-detection but are removed before app/target extraction
+    days, on_boot, line_for_stages_lower = extract_recurrence(
+        line_for_stages_lower, recurrence_phrases
+    )
+    line_for_stages = _reconstruct_original_case(line_for_stages, line_for_stages_lower)
+
+    # Stage 4: extract app/target (on time+recurrence-free text)
     app_type, target = extract_app_target(line_for_stages, line_for_stages_lower, mapping)
 
     # Build text for todos
@@ -218,11 +316,19 @@ def parse_line(line: str) -> ParsedLine:
             text = raw
 
     # Stage 5: confidence
-    confidence = assess_confidence(kind, time_val, app_type, line_for_stages_lower)
+    confidence = assess_confidence(kind, time_val, app_type, line_for_stages_lower, days, on_boot)
 
-    # If no time and not boot, low confidence
-    if kind == "todo" and not time_val:
+    if kind == "todo" and not time_val and not on_boot:
         confidence = "low"
+
+    # Determine if recurrence confirmation is needed: has a time but no days and not on_boot
+    needs_recurrence_confirmation = (
+        time_val is not None
+        and days is None
+        and not on_boot
+        and kind != "unparsed"
+        and kind != "boot_reminder"
+    )
 
     return ParsedLine(
         kind=kind,
@@ -232,7 +338,32 @@ def parse_line(line: str) -> ParsedLine:
         text=text or raw,
         confidence=confidence,
         raw=raw,
+        days=days,
+        on_boot=on_boot,
+        needs_recurrence_confirmation=needs_recurrence_confirmation,
     )
+
+
+def _reconstruct_original_case(original: str, lower: str) -> str:
+    """Reconstruct a case-preserved version of `original` from a lowercase
+    version that may have had words removed. This is a best-effort scan."""
+    if not original:
+        return ""
+    orig_words = original.split()
+    lower_words = lower.split()
+    if not lower_words:
+        return ""
+    # Simple greedy alignment: walk orig_words, keep words that appear in lower_words
+    result = []
+    li = 0
+    for ow in orig_words:
+        if li < len(lower_words) and ow.lower() == lower_words[li]:
+            result.append(ow)
+            li += 1
+        elif li < len(lower_words) and ow.lower() in lower_words[li]:
+            # Partial match (unlikely but handle gracefully)
+            pass
+    return " ".join(result)
 
 
 def parse_session_input(text: str) -> StageResult:
