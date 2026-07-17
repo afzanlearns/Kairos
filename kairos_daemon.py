@@ -39,11 +39,7 @@ def main():
     if "--register" in args:
         from kairos.daemon import register_autostart
         script_path = str(Path(__file__).resolve())
-        pythonw = sys.executable.replace("python.exe", "pythonw.exe")
-        if not Path(pythonw).exists():
-            pythonw = sys.executable
-        register_autostart(f'"{pythonw}" "{script_path}"')
-        print("Daemon registered for auto-start (silent background mode).")
+        register_autostart(script_path)
         return
 
     if "--unregister" in args:
