@@ -53,7 +53,10 @@ def strip_fillers(line: str, stopwords: list[str]) -> str:
 # ── Stage 2: Extract time ────────────────────────────────────────
 
 
-def extract_time(line: str) -> Optional[str]:
+def extract_time(line: str) -> tuple[Optional[str], str]:
+    """Returns (time_str, line_with_matched_time_removed).
+    The cleaned line is passed to subsequent stages so time fragments
+    (e.g. the colon in '18:45') don't leak into app/target extraction."""
     # 1. Check AM/PM patterns first (most explicit)
     m = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", line, re.IGNORECASE)
     if m:
@@ -65,13 +68,17 @@ def extract_time(line: str) -> Optional[str]:
         elif ampm == "am" and h == 12:
             h = 0
         if 0 <= h <= 23 and 0 <= mi <= 59:
-            return f"{h:02d}:{mi:02d}"
+            time_str = f"{h:02d}:{mi:02d}"
+            cleaned = (line[:m.start()] + line[m.end():]).strip()
+            return time_str, cleaned
     # 2. Check 24h HH:MM patterns
     m = re.search(r"\b(\d{1,2}):(\d{2})\b", line)
     if m:
         h, mi = int(m.group(1)), int(m.group(2))
         if 0 <= h <= 23 and 0 <= mi <= 59:
-            return f"{h:02d}:{mi:02d}"
+            time_str = f"{h:02d}:{mi:02d}"
+            cleaned = (line[:m.start()] + line[m.end():]).strip()
+            return time_str, cleaned
     # 3. Try dateparser for fuzzy date/time extraction
     parsed = dateparser.parse(
         line,
@@ -81,8 +88,8 @@ def extract_time(line: str) -> Optional[str]:
         },
     )
     if parsed:
-        return parsed.strftime("%H:%M")
-    return None
+        return parsed.strftime("%H:%M"), line
+    return None, line
 
 
 # ── Stage 3: Classify kind ───────────────────────────────────────
@@ -117,6 +124,8 @@ def extract_app_target(line: str, line_lower: str, mapping: dict) -> tuple[Optio
         for kw in ["reminder", "remind me", "remember", "don't forget", "make sure"]:
             raw_target = re.sub(r'\s*' + re.escape(kw) + r'\s*', ' ', raw_target, flags=re.IGNORECASE)
         raw_target = raw_target.strip()
+        # Strip trailing standalone prepositions left after time/keyword removal
+        raw_target = re.sub(r'\s+(?:at|for|on|in|by|with|about)\s*$', '', raw_target, flags=re.IGNORECASE).strip()
         if raw_target:
             explicit_target = raw_target
 
@@ -188,21 +197,20 @@ def parse_line(line: str) -> ParsedLine:
 
     cleaned_lower = cleaned.lower()
 
-    # Stage 2: extract time
-    time_val = extract_time(cleaned)
+    # Stage 2: extract time, removing the matched span from the working string
+    time_val, line_for_stages = extract_time(cleaned)
+    line_for_stages_lower = line_for_stages.lower()
 
-    # Stage 3: classify
-    kind = classify_kind(cleaned_lower, mapping)
+    # Stage 3: classify (on time-free text)
+    kind = classify_kind(line_for_stages_lower, mapping)
 
-    # Stage 4: extract app/target
-    app_type, target = extract_app_target(cleaned, cleaned_lower, mapping)
+    # Stage 4: extract app/target (on time-free text so colons in HH:MM don't leak)
+    app_type, target = extract_app_target(line_for_stages, line_for_stages_lower, mapping)
 
     # Build text for todos
     text = None
     if kind in ("todo", "boot_reminder"):
-        text = cleaned
-        text = re.sub(r'\b(?:at|@)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b', '', text, flags=re.IGNORECASE).strip()
-        text = re.sub(r'\b\d{1,2}:\d{2}\b', '', text).strip()
+        text = line_for_stages
         for kw in ["remind me", "reminder", "don't forget", "make sure", "remember", "regarding", "about", "set a", "set an", "to"]:
             text = re.sub(r'\b' + re.escape(kw) + r'\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\s+', ' ', text).strip().strip(",").strip(".").strip()
@@ -210,7 +218,7 @@ def parse_line(line: str) -> ParsedLine:
             text = raw
 
     # Stage 5: confidence
-    confidence = assess_confidence(kind, time_val, app_type, cleaned_lower)
+    confidence = assess_confidence(kind, time_val, app_type, line_for_stages_lower)
 
     # If no time and not boot, low confidence
     if kind == "todo" and not time_val:

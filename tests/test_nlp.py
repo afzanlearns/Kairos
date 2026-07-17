@@ -18,18 +18,30 @@ def test_strip_fillers():
 
 
 def test_extract_time_24h():
-    assert extract_time("at 19:00") == "19:00"
-    assert extract_time("meeting at 14:30") == "14:30"
+    result, rest = extract_time("at 19:00")
+    assert result == "19:00"
+    assert rest == "at"
+    result2, rest2 = extract_time("meeting at 14:30")
+    assert result2 == "14:30"
+    assert "14:30" not in rest2
 
 
 def test_extract_time_12h():
-    assert extract_time("at 6 pm") == "18:00"
-    assert extract_time("at 7:30 pm") == "19:30"
-    assert extract_time("at 9 am") == "09:00"
+    result, rest = extract_time("at 6 pm")
+    assert result == "18:00"
+    assert "6 pm" not in rest
+    result2, rest2 = extract_time("at 7:30 pm")
+    assert result2 == "19:30"
+    assert "7:30 pm" not in rest2
+    result3, rest3 = extract_time("at 9 am")
+    assert result3 == "09:00"
+    assert "9 am" not in rest3
 
 
 def test_extract_time_none():
-    assert extract_time("open vscode") is None
+    result, rest = extract_time("open vscode")
+    assert result is None
+    assert rest == "open vscode"
 
 
 def test_classify_todo():
@@ -88,6 +100,16 @@ CASES = [
     (
         "play youtube : https://youtube.com/watch?v=xyz at 6pm reminder",
         {"kind": "app_launch", "app": "chrome", "time": "18:00", "target": "https://youtube.com/watch?v=xyz", "confidence": "high"},
+    ),
+    # Regression: time-string colon (18:45) must not leak into target
+    (
+        "open youtube at 18:45",
+        {"kind": "app_launch", "app": "chrome", "target": "youtube.com", "time": "18:45"},
+    ),
+    # App keyword matched but no known app in mapping => low confidence
+    (
+        "open foobarapp",
+        {"kind": "app_launch", "app": None, "confidence": "low"},
     ),
 ]
 
