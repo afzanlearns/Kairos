@@ -425,26 +425,59 @@ class SlidingWidget(QWidget):
         self.deleteLater()
 
     def set_stack_position(self, index: int):
-        """Apply dimming for stack index (does NOT reposition)."""
+        """Apply dimming for stack index (does NOT reposition).
+        Enforces a legibility floor of 0.6 — no widget is ever dimmed below this."""
         self.stack_index = index
-        if index == 0:
-            self.setWindowOpacity(1.0)
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        elif index == 1:
-            self.setWindowOpacity(0.6)
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        else:
-            self.setWindowOpacity(0.3)
-            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        opacity = 1.0 if index == 0 else 0.6
+        self.setWindowOpacity(opacity)
+        self.setAttribute(
+            Qt.WidgetAttribute.WA_TransparentForMouseEvents,
+            index != 0,
+        )
+
+
+# ── CollapsedOverlay ──────────────────────────────────────────────
+
+
+class CollapsedOverlay(QFrame):
+    """Small pill-shaped overlay shown when widgets are collapsed beyond the cap."""
+    expand_requested = pyqtSignal()
+
+    def __init__(self, count: int, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(_W)
+        self.setFixedHeight(36)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 0, 12, 0)
+        self._label = QLabel()
+        self._label.setStyleSheet(
+            f"color: {_MUTED}; font-family: '{SANS}'; font-size: 11px;"
+            " border: none; background: transparent;"
+        )
+        layout.addWidget(self._label)
+        self._btn = _make_secondary("Show")
+        self._btn.clicked.connect(lambda: self.expand_requested.emit())
+        layout.addWidget(self._btn)
+        self.set_count(count)
+        self.setStyleSheet(
+            f"QFrame {{ background: {_BG}; border: 1px solid {_BORDER};"
+            f" border-radius: {_CORNER}px; }}"
+        )
+
+    def set_count(self, n: int):
+        self._label.setText(f"+{n} more")
 
 
 # ── WidgetManager ─────────────────────────────────────────────────
 
 
 class WidgetManager(QObject):
-    """Thread-safe widget manager with stacked visual and same-time merging."""
+    """Thread-safe widget manager with stacked visual, same-time merging,
+    and a hard cap on visible widgets (MAX_VISIBLE=2). Beyond the cap,
+    items are collapsed into a '+N more' overlay."""
 
     _WIDGET_TIMEOUT_MS = 18000
+    _MAX_VISIBLE = 2
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -454,6 +487,9 @@ class WidgetManager(QObject):
         self._req_queue: queue.Queue = queue.Queue()
         self._active_stack: list[SlidingWidget] = []
         self._poll_timer: QTimer | None = None
+        self._collapsed_items: list[WidgetBase] = []
+        self._collapsed_descriptions: list[str] = []
+        self._collapsed_overlay: CollapsedOverlay | None = None
 
     def start(self):
         if self._running:
@@ -478,6 +514,12 @@ class WidgetManager(QObject):
             sw.close()
             sw.deleteLater()
         self._active_stack.clear()
+        self._collapsed_items.clear()
+        self._collapsed_descriptions.clear()
+        if self._collapsed_overlay:
+            self._collapsed_overlay.hide()
+            self._collapsed_overlay.deleteLater()
+            self._collapsed_overlay = None
         if self._app:
             self._app.quit()
 
@@ -489,9 +531,19 @@ class WidgetManager(QObject):
 
     def _restack(self):
         self._prune_stack()
+        self._promote_collapsed()
         self._reposition_all()
         if self._active_stack:
             self._schedule_auto_dismiss()
+
+    def _promote_collapsed(self):
+        while len(self._active_stack) < self._MAX_VISIBLE and self._collapsed_items:
+            inner = self._collapsed_items.pop(0)
+            self._collapsed_descriptions.pop(0)
+            sw = SlidingWidget(inner, stack_index=len(self._active_stack))
+            self._active_stack.append(sw)
+            sw.show()
+        self._update_collapsed_overlay()
 
     def _reposition_all(self):
         screen = QApplication.primaryScreen().availableGeometry()
@@ -580,11 +632,32 @@ class WidgetManager(QObject):
     def _push_widget(self, inner: WidgetBase):
         winsound.MessageBeep(winsound.MB_OK)
         inner.closed.connect(self._on_inner_closed)
+
+        if len(self._active_stack) >= self._MAX_VISIBLE:
+            desc = self._describe_widget(inner)
+            self._collapsed_items.append(inner)
+            self._collapsed_descriptions.append(desc)
+            self._show_collapsed_overlay()
+            return
+
+        self._do_push_widget(inner)
+
+    def _do_push_widget(self, inner: WidgetBase):
         sw = SlidingWidget(inner, stack_index=len(self._active_stack))
         self._active_stack.append(sw)
         self._position_widget(sw)
         sw.show_slide_in()
         self._schedule_auto_dismiss()
+
+    def _describe_widget(self, inner: WidgetBase) -> str:
+        for child in inner.findChildren(QPushButton):
+            if child.objectName() == "pill":
+                return child.text()[:40]
+        for child in inner.findChildren(QLabel):
+            t = child.text()
+            if t not in ("REMINDER",) and len(t) > 1:
+                return t[:40]
+        return "(item)"
 
     def _on_inner_closed(self, inner: WidgetBase):
         for sw in list(self._active_stack):
@@ -593,6 +666,54 @@ class WidgetManager(QObject):
                 sw.slide_out()
                 break
         QTimer.singleShot(400, self._restack)
+
+    def _show_collapsed_overlay(self):
+        n = len(self._collapsed_items)
+        if n == 0:
+            if self._collapsed_overlay:
+                self._collapsed_overlay.hide()
+            return
+        if self._collapsed_overlay is None:
+            self._collapsed_overlay = CollapsedOverlay(0)
+            self._collapsed_overlay.expand_requested.connect(self._expand_collapsed)
+        self._collapsed_overlay.set_count(n)
+        self._position_collapsed_overlay()
+        self._collapsed_overlay.show()
+
+    def _position_collapsed_overlay(self):
+        if not self._active_stack:
+            return
+        screen = QApplication.primaryScreen().availableGeometry()
+        last = self._active_stack[-1]
+        base_y = screen.bottom() - 48
+        cumulative = sum(
+            sw.inner.height() + _GAP_STACK for sw in self._active_stack
+        )
+        self._collapsed_overlay.move(
+            screen.right() - _W - _PAD,
+            base_y - cumulative - 36 - _GAP_STACK,
+        )
+
+    def _update_collapsed_overlay(self):
+        if self._collapsed_items:
+            self._show_collapsed_overlay()
+        elif self._collapsed_overlay:
+            self._collapsed_overlay.hide()
+
+    def _expand_collapsed(self):
+        if not self._collapsed_items:
+            return
+        descriptions = list(self._collapsed_descriptions)
+        items = list(self._collapsed_items)
+        self._collapsed_items.clear()
+        self._collapsed_descriptions.clear()
+        if self._collapsed_overlay:
+            self._collapsed_overlay.hide()
+
+        inner = MultiWidget([
+            (desc, "Open", lambda w: None) for desc in descriptions
+        ])
+        self._do_push_widget(inner)
 
     def _schedule_auto_dismiss(self):
         """Set auto-dismiss timer only for the frontmost widget."""

@@ -551,25 +551,26 @@ def daemon_status():
 
 @cli.command(name="daemon-restart")
 def daemon_restart():
-    """Force-kill and restart the Kairos daemon."""
-    from kairos.daemon import force_stop_daemon
+    """Force-kill and restart the Kairos supervisor (which manages the daemon)."""
+    from kairos.daemon import force_stop_daemon, force_stop_supervisor
     import subprocess, sys, os, time
 
-    click.echo("Stopping any existing daemon...")
+    click.echo("Stopping supervisor and daemon...")
+    force_stop_supervisor()
     force_stop_daemon()
     time.sleep(1)
 
     pythonw = sys.executable.replace("python.exe", "pythonw.exe")
     if not os.path.isfile(pythonw):
         pythonw = sys.executable
-    script = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kairos_daemon.py")
-    click.echo(f"Starting daemon: {pythonw} {script}")
+    script = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kairos_supervisor.py")
+    click.echo(f"Starting supervisor: {pythonw} {script}")
     subprocess.Popen(
         [pythonw, script],
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
     )
     time.sleep(2)
-    click.echo("Daemon restarted.")
+    click.echo("Supervisor started.")
 
 
 # ── parse ─────────────────────────────────────────────────────────
@@ -752,7 +753,7 @@ def now():
                 show_widgets_cli(
                     launched_sessions=[s],
                     reminders=reminders,
-                    timeout_ms=8000,
+                    timeout_per_widget_ms=8000,
                 )
             except Exception as e:
                 logger.warning("Widget display failed: %s", e)

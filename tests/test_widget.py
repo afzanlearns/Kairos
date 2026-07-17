@@ -172,9 +172,74 @@ class TestStacking:
         mgr._reposition_all()
 
         assert sw0.windowOpacity() == pytest.approx(1.0, abs=0.01), "Frontmost should be full opacity"
-        assert sw1.windowOpacity() == pytest.approx(0.6, abs=0.01), "Middle should be 0.6 opacity"
-        assert sw2.windowOpacity() == pytest.approx(0.3, abs=0.01), "Back should be 0.3 opacity"
+        assert sw1.windowOpacity() == pytest.approx(0.6, abs=0.01), "Back widgets should be 0.6 opacity (legibility floor)"
+        assert sw2.windowOpacity() == pytest.approx(0.6, abs=0.01), "Back widgets should be 0.6 opacity (legibility floor)"
 
         for sw in mgr._active_stack:
             sw.close()
+        mgr.stop()
+
+    def test_opacity_never_below_floor(self, qapp):
+        """No widget's opacity drops below 0.6 regardless of stack depth."""
+        from kairos.models import Session
+        from kairos.widget import (
+            WidgetManager, SlidingWidget, HeadsUpWidget,
+        )
+
+        mgr = WidgetManager()
+        mgr.start()
+        mgr.mark_ready()
+        mgr._process_queue()
+
+        for i in range(5):
+            inner = HeadsUpWidget(
+                Session(name=f"w{i}"),
+                on_open_now=lambda w: None,
+                on_snooze=lambda w: None,
+            )
+            sw = SlidingWidget(inner, stack_index=i)
+            mgr._active_stack.append(sw)
+
+        mgr._reposition_all()
+
+        for i, sw in enumerate(mgr._active_stack):
+            assert sw.windowOpacity() >= 0.59, (
+                f"Widget at index {i} has opacity {sw.windowOpacity()} below 0.6 floor"
+            )
+
+        for sw in mgr._active_stack:
+            sw.close()
+        mgr.stop()
+
+    def test_collapse_beyond_cap(self, qapp):
+        """3rd widget push collapses into '+N more' overlay; only 2 visible."""
+        from kairos.models import Session
+        from kairos.widget import WidgetManager, HeadsUpWidget
+
+        mgr = WidgetManager()
+        mgr.start()
+        mgr.mark_ready()
+        mgr._process_queue()
+
+        s1 = Session(name="a")
+        s2 = Session(name="b")
+        s3 = Session(name="c")
+
+        w1 = HeadsUpWidget(s1, on_open_now=lambda w: None, on_snooze=lambda w: None)
+        mgr._push_widget(w1)
+
+        w2 = HeadsUpWidget(s2, on_open_now=lambda w: None, on_snooze=lambda w: None)
+        mgr._push_widget(w2)
+
+        assert len(mgr._active_stack) == 2, "Should have exactly 2 visible widgets"
+        assert len(mgr._collapsed_items) == 0, "Should not have collapsed yet"
+
+        w3 = HeadsUpWidget(s3, on_open_now=lambda w: None, on_snooze=lambda w: None)
+        mgr._push_widget(w3)
+
+        assert len(mgr._active_stack) == 2, "Should still have exactly 2 visible widgets after 3rd push"
+        assert len(mgr._collapsed_items) == 1, "Should have 1 collapsed item"
+        assert mgr._collapsed_overlay is not None, "Collapsed overlay should exist"
+        assert mgr._collapsed_overlay.isVisible(), "Collapsed overlay should be visible"
+
         mgr.stop()

@@ -246,6 +246,40 @@ def force_stop_daemon() -> bool:
     """Kill all pythonw processes running kairos_daemon.py."""
     import subprocess
     import psutil
+
+    killed = False
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            if proc.info["name"] and "pythonw" in proc.info["name"].lower():
+                cmdline = " ".join(proc.info["cmdline"] or [])
+                if "kairos_daemon" in cmdline.lower():
+                    proc.kill()
+                    killed = True
+                    logger.info("Force-killed daemon PID %d", proc.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if not killed:
+        logger.info("No running daemon process found to kill.")
+    return killed
+
+
+def force_stop_supervisor() -> bool:
+    """Kill all processes running kairos_supervisor.py."""
+    import psutil
+
+    killed = False
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            cmdline = " ".join(proc.info["cmdline"] or [])
+            if "kairos_supervisor" in cmdline.lower():
+                proc.kill()
+                killed = True
+                logger.info("Force-killed supervisor PID %d", proc.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if not killed:
+        logger.info("No running supervisor process found to kill.")
+    return killed
     killed = False
     for proc in psutil.process_iter(["pid", "name", "cmdline"]):
         try:
