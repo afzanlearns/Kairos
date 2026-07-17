@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import sys
+import time
 import logging
+import threading
 from datetime import datetime
 from typing import Optional
 
@@ -151,6 +153,8 @@ class WidgetManager:
         self._app: QApplication | None = None
         self._widgets: list[SlidingWidget] = []
         self._running = False
+        self._ready = threading.Event()
+        self._pending: list[tuple[str, tuple, dict]] = []
 
     @property
     def thread(self):
@@ -159,6 +163,19 @@ class WidgetManager:
     def start(self):
         self._running = True
 
+    def mark_ready(self):
+        self._ready.set()
+        self._flush_pending()
+
+    def wait_ready(self, timeout: float = 5.0) -> bool:
+        return self._ready.wait(timeout)
+
+    def _flush_pending(self):
+        pending = self._pending[:]
+        self._pending.clear()
+        for method_name, args, kwargs in pending:
+            getattr(self, method_name)(*args, **kwargs)
+
     def stop(self):
         self._running = False
         for w in self._widgets:
@@ -166,19 +183,28 @@ class WidgetManager:
         if self._app:
             self._app.quit()
 
-    def show_heads_up(self, session: Session, on_open_now, on_snooze):
+    def show_heads_up(self, session: Session, on_open_now=None, on_snooze=None):
+        if not self._ready.is_set():
+            self._pending.append(("show_heads_up", (session, on_open_now, on_snooze), {}))
+            return
         widget = SlidingWidget(HeadsUpWidget(session, on_open_now, on_snooze))
         self._widgets.append(widget)
         widget.show_slide_in()
         QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
 
     def show_launched(self, session: Session):
+        if not self._ready.is_set():
+            self._pending.append(("show_launched", (session,), {}))
+            return
         widget = SlidingWidget(LaunchedWidget(session))
         self._widgets.append(widget)
         widget.show_slide_in()
         QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
 
-    def show_reminder(self, text: str, on_done):
+    def show_reminder(self, text: str, on_done=None):
+        if not self._ready.is_set():
+            self._pending.append(("show_reminder", (text, on_done), {}))
+            return
         widget = SlidingWidget(ReminderWidget(text, on_done))
         self._widgets.append(widget)
         widget.show_slide_in()
@@ -241,8 +267,36 @@ class SlidingWidget(QWidget):
         self._anim.start()
 
 
+def show_widgets_cli(
+    launched_sessions: list[Session] | None = None,
+    reminders: list[tuple[str, callable]] | None = None,
+    timeout_ms: int = 8000,
+):
+    """Show widgets from a CLI context using a temporary QApplication.
+
+    Creates a short-lived Qt event loop, displays the given widgets,
+    and exits after *timeout_ms* or when all widgets are dismissed.
+    """
+    app = QApplication.instance() or QApplication(sys.argv)
+    mgr = WidgetManager()
+    mgr._app = app
+    mgr.mark_ready()
+
+    if launched_sessions:
+        for s in launched_sessions:
+            mgr.show_launched(s)
+    if reminders:
+        for text, on_done in reminders:
+            mgr.show_reminder(text, on_done or (lambda w: None))
+
+    if mgr._widgets:
+        QTimer.singleShot(timeout_ms, app.quit)
+        app.exec()
+
+
 def run_widget_app(widget_manager: WidgetManager):
     app = QApplication.instance() or QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
     widget_manager._app = app
+    widget_manager.mark_ready()
     app.exec()
