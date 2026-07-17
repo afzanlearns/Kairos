@@ -53,6 +53,7 @@ _BTN_H = 28
 _BTN_GAP = 8
 _CORNER = 3
 _CORNER_SM = 2
+_GAP_STACK = 8
 
 _BG = "#111113"
 _BORDER = "#2f2f36"
@@ -424,9 +425,8 @@ class SlidingWidget(QWidget):
         self.deleteLater()
 
     def set_stack_position(self, index: int):
-        """Apply dimming and y-offset for stack index."""
+        """Apply dimming for stack index (does NOT reposition)."""
         self.stack_index = index
-        self._target_y = self._compute_y(index)
         if index == 0:
             self.setWindowOpacity(1.0)
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
@@ -436,7 +436,6 @@ class SlidingWidget(QWidget):
         else:
             self.setWindowOpacity(0.3)
             self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
-        self.move(self._target_x, self._target_y)
 
 
 # ── WidgetManager ─────────────────────────────────────────────────
@@ -490,10 +489,23 @@ class WidgetManager(QObject):
 
     def _restack(self):
         self._prune_stack()
-        for i, sw in enumerate(self._active_stack):
-            sw.set_stack_position(i)
+        self._reposition_all()
         if self._active_stack:
             self._schedule_auto_dismiss()
+
+    def _reposition_all(self):
+        screen = QApplication.primaryScreen().availableGeometry()
+        x = screen.right() - _W - _PAD
+        base_y = screen.bottom() - 48
+        cumulative = 0
+        for i, sw in enumerate(self._active_stack):
+            sw.set_stack_position(i)
+            h = sw.inner.height()
+            y = base_y - h - cumulative
+            sw._target_y = y
+            sw._target_x = x
+            sw.move(x, y)
+            cumulative += h + _GAP_STACK
 
     # ── Queue processing ──
 
@@ -592,10 +604,18 @@ class WidgetManager(QObject):
 
     def _position_widget(self, widget: SlidingWidget):
         screen = QApplication.primaryScreen().availableGeometry()
-        y = screen.bottom() - widget.height() - 48 - (_PAD * widget.stack_index)
-        widget._target_y = y
-        widget._target_x = screen.right() - widget.width() - _PAD
-        widget.move(screen.right(), y)
+        x = screen.right() - _W - _PAD
+        cumulative = sum(
+            sw.inner.height() + _GAP_STACK
+            for sw in self._active_stack[:-1]  # exclude the widget being positioned
+        )
+        widget._target_x = x
+        widget._target_y = screen.bottom() - 48 - widget.inner.height() - cumulative
+        widget.move(screen.right(), widget._target_y)
+        # Dim all existing widgets behind the new one
+        for i, sw in enumerate(self._active_stack):
+            if sw is not widget:
+                sw.set_stack_position(i)
 
     def _dismiss_frontmost(self):
         if not self._active_stack:
