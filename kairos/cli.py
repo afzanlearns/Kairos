@@ -466,9 +466,17 @@ def config(quiet_window: str | None):
 
 
 @cli.command()
-@click.option("--file", "file_path", default=None, help="Read input from a text file")
+@click.option("--file", "file_path", default=None, help="Read input from a text file (skips editor)")
 def parse(file_path: str | None):
-    """Parse natural language input into session items."""
+    """Parse natural language input into structured session items.
+
+    Opens the system text editor for multi-line input (respects $VISUAL,
+    then $EDITOR, falls back to Notepad on Windows). Type your
+    description, save, and close the editor to parse it.
+
+    Use --file to read from a plain text file directly without opening an editor.
+    Pipe input via stdin (e.g. `echo "..." | kairos parse`) for non-interactive use.
+    """
     from kairos.nlp import parse_session_input
     from kairos.storage import session_exists
 

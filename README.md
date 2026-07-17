@@ -54,11 +54,21 @@ kairos skip <name>                         Skip a session for today
 ### Natural Language Parsing
 
 ```
-kairos parse                               Enter multi-line input interactively
-kairos parse --file <path>                 Parse from a text file
+kairos parse                               Open editor for multi-line input
+kairos parse --file <path>                 Parse from a text file directly
 ```
 
-Example input:
+`kairos parse` opens your system text editor to type session descriptions
+in plain English, one clause per line. It respects `$VISUAL`, then `$EDITOR`,
+and falls back to Notepad on Windows. Save and close the editor to see the
+structured breakdown, then confirm to save it as a new or existing session.
+
+Pipe input directly (no editor):
+```
+echo -e "open vscode at 7 pm\nremind me to check email" | kairos parse
+```
+
+Example input saved in the editor:
 ```
 Open vscode at 7 pm
 Set a reminder for meeting at 7:30 pm
@@ -97,6 +107,9 @@ Configuration files are stored under `~/.kairos/`:
 
 | File | Purpose |
 |------|---------|
+| Variable / File | Purpose |
+|----------------|---------|
+| `$VISUAL` / `$EDITOR` | Editor used by `kairos parse` (default: Notepad) |
 | `sessions/<name>.json` | Session definitions |
 | `app_mapping.json` | Keyword-to-app mapping for NLP |
 | `stopwords.txt` | Filler words stripped during NLP |
@@ -126,6 +139,7 @@ kairos/
     test_launcher.py
     test_daemon.py
     test_nlp.py
+    test_cli.py
   pyproject.toml
   README.md
 ```
