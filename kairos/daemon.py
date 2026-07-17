@@ -96,41 +96,44 @@ def get_due_sessions(
             continue
 
         # Time-based sessions
-        if schedule.time and weekday_str in schedule.days:
-            try:
-                h, m = schedule.time.split(":")
-                sched_dt = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
-            except (ValueError, AttributeError):
-                continue
+        if not schedule.time:
+            continue
+        # Empty days = "once" (run today); non-empty days must include today
+        if schedule.days and weekday_str not in schedule.days:
+            continue
+        try:
+            h, m = schedule.time.split(":")
+            sched_dt = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+        except (ValueError, AttributeError):
+            continue
 
-            # Heads-up: exactly 5 minutes before
-            heads_up_dt = sched_dt - timedelta(minutes=HEADS_UP_MINUTES)
-            if now >= heads_up_dt and now < sched_dt:
-                due_event_key = f"heads_up_{session.name}_{today_str}"
-                due.append(DueEvent(
-                    session_name=session.name,
-                    kind="heads_up",
-                    scheduled_time=schedule.time,
-                ))
-                continue
+        # Heads-up: exactly 5 minutes before
+        heads_up_dt = sched_dt - timedelta(minutes=HEADS_UP_MINUTES)
+        if now >= heads_up_dt and now < sched_dt:
+            due.append(DueEvent(
+                session_name=session.name,
+                kind="heads_up",
+                scheduled_time=schedule.time,
+            ))
+            continue
 
-            # Launch: exactly at scheduled time
-            if now >= sched_dt and now < sched_dt + timedelta(minutes=1):
-                due.append(DueEvent(
-                    session_name=session.name,
-                    kind="launch",
-                    scheduled_time=schedule.time,
-                ))
-                continue
+        # Launch: exactly at scheduled time
+        if now >= sched_dt and now < sched_dt + timedelta(minutes=1):
+            due.append(DueEvent(
+                session_name=session.name,
+                kind="launch",
+                scheduled_time=schedule.time,
+            ))
+            continue
 
-            # Missed/catch-up: scheduled time already passed today, not yet run
-            if now > sched_dt + timedelta(minutes=1):
-                due.append(DueEvent(
-                    session_name=session.name,
-                    kind="missed",
-                    scheduled_time=schedule.time,
-                ))
-                continue
+        # Missed/catch-up: scheduled time already passed today, not yet run
+        if now > sched_dt + timedelta(minutes=1):
+            due.append(DueEvent(
+                session_name=session.name,
+                kind="missed",
+                scheduled_time=schedule.time,
+            ))
+            continue
 
     return due
 
@@ -255,10 +258,14 @@ class Daemon:
     def _run_catch_up(self):
         now = datetime.now()
         quiet = _load_quiet_hours()
+        weekday_str = WEEKDAY_MAP[now.weekday()]
         sessions = self._load_all_sessions()
 
         for session in sessions:
             if not session.schedule.time:
+                continue
+            # Empty days = "once" (run today); non-empty days must include today
+            if session.schedule.days and weekday_str not in session.schedule.days:
                 continue
             if session.last_run and session.last_run.startswith(now.strftime("%Y-%m-%d")):
                 continue
