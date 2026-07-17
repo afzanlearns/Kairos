@@ -264,8 +264,12 @@ class Daemon:
         for session in sessions:
             if not session.schedule.time:
                 continue
-            # Empty days = "once" (run today); non-empty days must include today
-            if session.schedule.days and weekday_str not in session.schedule.days:
+            # Only catch up repeating sessions (have days set).
+            # "Once" sessions (empty days) should fire at their exact time only,
+            # not every time the daemon restarts.
+            if not session.schedule.days:
+                continue
+            if weekday_str not in session.schedule.days:
                 continue
             if session.last_run and session.last_run.startswith(now.strftime("%Y-%m-%d")):
                 continue
