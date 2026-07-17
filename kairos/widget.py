@@ -154,7 +154,10 @@ class WidgetManager(QObject):
 
     Daemon threads push widget requests into a queue; a QTimer on the main
     Qt event loop polls the queue and creates/updates widgets.
+    Widgets stack upward from the bottom-right, offset so they don't overlap.
     """
+    _STACK_OFFSET = 20  # pixels between stacked widgets
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._app: QApplication | None = None
@@ -163,6 +166,7 @@ class WidgetManager(QObject):
         self._ready = threading.Event()
         self._req_queue: queue.Queue = queue.Queue()
         self._poll_timer: QTimer | None = None
+        self._stack_y = 0
 
     def start(self):
         if self._running:
@@ -182,10 +186,25 @@ class WidgetManager(QObject):
         self._running = False
         if self._poll_timer:
             self._poll_timer.stop()
-        for w in self._widgets:
+        for w in list(self._widgets):
             w.close()
+            w.deleteLater()
+        self._widgets.clear()
         if self._app:
             self._app.quit()
+
+    def _reposition_widget(self, widget: SlidingWidget):
+        screen = QApplication.primaryScreen().availableGeometry()
+        widget_height = widget.height()
+        offset_y = screen.bottom() - widget_height - 48 - self._stack_y
+        self._stack_y += widget_height + self._STACK_OFFSET
+        widget.move(widget.x(), offset_y)
+        widget._target_y = offset_y
+
+    def _on_widget_closed(self, widget):
+        if widget in self._widgets:
+            self._widgets.remove(widget)
+        widget.deleteLater()
 
     def _process_queue(self):
         try:
@@ -209,6 +228,7 @@ class WidgetManager(QObject):
         if not self._running:
             return
         widget = SlidingWidget(HeadsUpWidget(session, on_open_now, on_snooze))
+        self._reposition_widget(widget)
         self._widgets.append(widget)
         widget.show_slide_in()
         QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
@@ -217,6 +237,7 @@ class WidgetManager(QObject):
         if not self._running:
             return
         widget = SlidingWidget(LaunchedWidget(session))
+        self._reposition_widget(widget)
         self._widgets.append(widget)
         widget.show_slide_in()
         QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
@@ -225,6 +246,7 @@ class WidgetManager(QObject):
         if not self._running:
             return
         widget = SlidingWidget(ReminderWidget(text, on_done))
+        self._reposition_widget(widget)
         self._widgets.append(widget)
         widget.show_slide_in()
         QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
@@ -232,7 +254,7 @@ class WidgetManager(QObject):
     def _auto_dismiss(self, widget):
         if widget in self._widgets and not widget.inner.dismissed:
             widget.slide_out()
-            self._widgets.remove(widget)
+            self._on_widget_closed(widget)
 
 
 class SlidingWidget(QWidget):
@@ -259,6 +281,7 @@ class SlidingWidget(QWidget):
 
         self._anim = QPropertyAnimation(self, b"offset")
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self._anim.finished.connect(self._on_anim_finished)
 
     def get_offset(self):
         return self._anim_offset
@@ -271,18 +294,23 @@ class SlidingWidget(QWidget):
 
     offset = pyqtProperty(float, get_offset, set_offset)
 
+    def _on_anim_finished(self):
+        if self._anim.endValue() == 0:
+            self.close()
+
     def show_slide_in(self):
         self.show()
+        self._anim.stop()
         self._anim.setDuration(300)
         self._anim.setStartValue(0)
         self._anim.setEndValue(-self.width() - 12)
         self._anim.start()
 
     def slide_out(self):
+        self._anim.stop()
         self._anim.setDuration(200)
         self._anim.setStartValue(-self.width() - 12)
         self._anim.setEndValue(0)
-        self._anim.finished.connect(self.close)
         self._anim.start()
 
 
