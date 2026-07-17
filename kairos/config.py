@@ -11,6 +11,8 @@ APP_MAPPING_PATH = KAIROS_DIR / "app_mapping.json"
 STOPWORDS_PATH = KAIROS_DIR / "stopwords.txt"
 RECURRENCE_PHRASES_PATH = KAIROS_DIR / "recurrence_phrases.json"
 LOCK_FILE_PATH = KAIROS_DIR / "daemon.lock"
+HEARTBEAT_PATH = KAIROS_DIR / "heartbeat.json"
+DAEMON_HEARTBEAT_MAX_AGE = 90
 
 DEFAULT_APP_MAPPING = {
     "youtube": {"type": "chrome", "url": "youtube.com"},

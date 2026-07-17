@@ -10,7 +10,8 @@ from datetime import datetime, date, timedelta
 from typing import Optional
 
 from kairos.config import (
-    KAIROS_DIR, LOCK_FILE_PATH, QUIET_HOURS_PATH, DAEMON_POLL_SECONDS,
+    KAIROS_DIR, LOCK_FILE_PATH, HEARTBEAT_PATH, DAEMON_HEARTBEAT_MAX_AGE,
+    QUIET_HOURS_PATH, DAEMON_POLL_SECONDS,
     HEADS_UP_MINUTES, ensure_dirs,
 )
 from kairos.models import Session, DueEvent, SessionLog, QuietHoursConfig
@@ -18,6 +19,8 @@ from kairos.storage import list_sessions, load_session, save_session
 from kairos.launcher import launch_session
 
 logger = logging.getLogger(__name__)
+
+MUTEX_NAME = "KairosDaemonMutex"
 
 WEEKDAY_MAP = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
@@ -190,28 +193,149 @@ def release_lock():
         pass
 
 
+# ── Daemon status helpers ──────────────────────────────────────────
+
+
+def is_daemon_running() -> bool:
+    """Check whether a Kairos daemon holds the named mutex."""
+    import ctypes
+    kernel32 = ctypes.windll.kernel32
+    mutex = kernel32.CreateMutexW(None, False, MUTEX_NAME)
+    if not mutex:
+        return False
+    err = ctypes.GetLastError()
+    kernel32.CloseHandle(mutex)
+    return err == 183  # ERROR_ALREADY_EXISTS
+
+
+def _write_heartbeat(now: datetime) -> None:
+    import json
+    try:
+        HEARTBEAT_PATH.write_text(
+            json.dumps({"pid": os.getpid(), "time": now.isoformat(timespec="seconds")}),
+            encoding="utf-8",
+        )
+    except Exception as e:
+        logger.warning("Failed to write heartbeat: %s", e)
+
+
+def read_heartbeat() -> dict | None:
+    """Read the heartbeat JSON, or None if missing/corrupt."""
+    import json
+    try:
+        return json.loads(HEARTBEAT_PATH.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+
+def daemon_healthy(heartbeat: dict | None = None) -> bool:
+    """Return True if a recent heartbeat exists and the daemon mutex is held."""
+    if not is_daemon_running():
+        return False
+    hb = heartbeat if heartbeat is not None else read_heartbeat()
+    if hb is None:
+        return False
+    try:
+        age = (datetime.now() - datetime.fromisoformat(hb["time"])).total_seconds()
+        return age < DAEMON_HEARTBEAT_MAX_AGE
+    except (KeyError, ValueError):
+        return False
+
+
+def force_stop_daemon() -> bool:
+    """Kill all pythonw processes running kairos_daemon.py."""
+    import subprocess
+    import psutil
+    killed = False
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            if proc.info["name"] and "pythonw" in proc.info["name"].lower():
+                cmdline = " ".join(proc.info["cmdline"] or [])
+                if "kairos_daemon" in cmdline.lower():
+                    proc.kill()
+                    killed = True
+                    logger.info("Force-killed daemon PID %d", proc.info["pid"])
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    if not killed:
+        logger.info("No running daemon process found to kill.")
+    return killed
+
+
 # ── Auto-start registration ──────────────────────────────────────
 
 TASK_NAME = "KairosDaemon"
 
 
+def _build_task_xml(pythonw_path: str, script_path: str) -> str:
+    """Generate Task Scheduler XML with restart-on-failure and start-when-available."""
+    now_str = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    return f'''<?xml version="1.0" encoding="UTF-16"?>
+<Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <RegistrationInfo>
+    <Date>{now_str}</Date>
+    <Author>Kairos</Author>
+    <Description>Kairos personal workflow orchestrator daemon</Description>
+  </RegistrationInfo>
+  <Triggers>
+    <LogonTrigger>
+      <Enabled>true</Enabled>
+      <Delay>PT30S</Delay>
+    </LogonTrigger>
+  </Triggers>
+  <Principals>
+    <Principal id="Author">
+      <RunLevel>LeastPrivilege</RunLevel>
+    </Principal>
+  </Principals>
+  <Settings>
+    <Enabled>true</Enabled>
+    <StartWhenAvailable>true</StartWhenAvailable>
+    <RestartOnFailure>
+      <Interval>PT1M</Interval>
+      <Count>3</Count>
+    </RestartOnFailure>
+  </Settings>
+  <Actions Context="Author">
+    <Exec>
+      <Command>{pythonw_path}</Command>
+      <Arguments>"{script_path}"</Arguments>
+    </Exec>
+  </Actions>
+</Task>'''
+
+
 def _register_schtasks(pythonw_path: str, script_path: str) -> bool:
-    """Register via Windows Task Scheduler (more robust than Run key).
+    """Register via Windows Task Scheduler with restart-on-failure.
+    Uses an XML task definition to set RestartOnFailure and
+    StartWhenAvailable flags not exposed via basic schtasks flags.
     Returns True if registration succeeded, False if it should fall back."""
     import subprocess
-    tr = f'"{pythonw_path}" "{script_path}"'
-    for trigger in ['/sc onlogon', '/sc onstart /delay 0000:30']:
-        cmd = f'schtasks /create /tn "{TASK_NAME}" /tr "{tr}" {trigger} /f'
+    import tempfile
+    xml = _build_task_xml(pythonw_path, script_path)
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".xml", delete=False, encoding="utf-16"
+    )
+    try:
+        tmp.write(xml)
+        tmp.close()
+        cmd = f'schtasks /create /tn "{TASK_NAME}" /xml "{tmp.name}" /f'
         r = subprocess.run(cmd, capture_output=True, text=True, shell=True)
         if r.returncode == 0:
-            logger.info("Registered via Task Scheduler (%s)", trigger)
-            print(f"Registered via Task Scheduler (trigger: {trigger.split()[1]}).")
+            logger.info("Registered via Task Scheduler (with restart-on-failure)")
+            print("Registered via Task Scheduler (restart-on-failure enabled).")
             return True
         err_text = (r.stderr or "").lower()
         if "access is denied" in err_text:
-            break
-    logger.info("Task Scheduler not available (access denied), using Run key.")
-    return False
+            logger.info("Task Scheduler not available (access denied), using Run key.")
+        else:
+            logger.warning("schtasks failed (rc=%d): %s", r.returncode, r.stderr)
+        return False
+    finally:
+        try:
+            os.unlink(tmp.name)
+        except Exception:
+            pass
 
 
 def _register_runkey(script_path: str) -> None:
@@ -291,25 +415,30 @@ class Daemon:
             return
 
         self._running = True
-        logger.info("Kairos daemon started (PID %d)", os.getpid())
+        logger.info("Daemon starting (PID %d, reason=normal)", os.getpid())
 
         # Short startup delay to let filesystem/environment settle at boot
         time.sleep(2)
 
         try:
+            logger.info("Daemon catch-up starting")
             self._run_catch_up()
             self._startup_done = True
+            logger.info("Daemon catch-up complete, entering poll loop")
 
             # ── Main loop ──
             while self._running:
                 try:
                     self._tick()
                 except Exception as e:
-                    logger.error("Error in daemon tick: %s", e, exc_info=True)
+                    logger.error("Unhandled error in daemon tick: %s", e, exc_info=True)
                 time.sleep(DAEMON_POLL_SECONDS)
+        except Exception as e:
+            logger.error("Daemon exiting: unhandled error — %s", e, exc_info=True)
+            raise
         finally:
             release_lock()
-            logger.info("Kairos daemon stopped.")
+            logger.info("Daemon exiting: reason=shutdown (PID %d)", os.getpid())
 
     def stop(self):
         self._running = False
@@ -364,6 +493,7 @@ class Daemon:
 
     def _tick(self):
         now = datetime.now()
+        _write_heartbeat(now)
         quiet = _load_quiet_hours()
         sessions = self._load_all_sessions()
         due_events = get_due_sessions(sessions, now, quiet, self._notified_set)

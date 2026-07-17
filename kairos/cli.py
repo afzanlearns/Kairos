@@ -510,6 +510,68 @@ def config(quiet_window: str | None):
         click.echo(f"Quiet hours set: {quiet_window}")
 
 
+# ── daemon-status ─────────────────────────────────────────────────
+
+@cli.command(name="daemon-status")
+def daemon_status():
+    """Check whether the Kairos daemon is running and healthy."""
+    from kairos.daemon import is_daemon_running, read_heartbeat, daemon_healthy
+    from kairos.config import DAEMON_HEARTBEAT_MAX_AGE
+    from datetime import datetime
+
+    running = is_daemon_running()
+    hb = read_heartbeat()
+
+    if not running:
+        msg = "stopped (no mutex)"
+        click.echo(f"Daemon: {msg}")
+        return
+
+    if hb is None:
+        msg = "running (no heartbeat data yet)"
+        click.echo(f"Daemon: {msg}")
+        return
+
+    try:
+        hb_time = datetime.fromisoformat(hb["time"])
+        age = (datetime.now() - hb_time).total_seconds()
+        pid = hb.get("pid", "?")
+        if age < DAEMON_HEARTBEAT_MAX_AGE:
+            click.echo(f"Daemon: running (PID {pid}, last heartbeat {age:.0f}s ago)")
+        else:
+            click.echo(
+                f"Daemon: stale/likely dead (PID {pid}, "
+                f"last heartbeat {age:.0f}s ago — >{DAEMON_HEARTBEAT_MAX_AGE}s threshold)"
+            )
+    except (KeyError, ValueError) as e:
+        click.echo(f"Daemon: running (corrupt heartbeat: {e})")
+
+
+# ── daemon-restart ────────────────────────────────────────────────
+
+@cli.command(name="daemon-restart")
+def daemon_restart():
+    """Force-kill and restart the Kairos daemon."""
+    from kairos.daemon import force_stop_daemon
+    import subprocess, sys, os, time
+
+    click.echo("Stopping any existing daemon...")
+    force_stop_daemon()
+    time.sleep(1)
+
+    pythonw = sys.executable.replace("python.exe", "pythonw.exe")
+    if not os.path.isfile(pythonw):
+        pythonw = sys.executable
+    script = os.path.join(os.path.dirname(os.path.dirname(__file__)), "kairos_daemon.py")
+    click.echo(f"Starting daemon: {pythonw} {script}")
+    subprocess.Popen(
+        [pythonw, script],
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+    )
+    time.sleep(2)
+    click.echo("Daemon restarted.")
+
+
 # ── parse ─────────────────────────────────────────────────────────
 
 
