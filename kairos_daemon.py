@@ -57,13 +57,16 @@ def main():
 
     try:
         from threading import Thread
-        daemon_thread = Thread(target=daemon.run, daemon=True)
+        daemon_thread = Thread(target=daemon.run, daemon=False)
         daemon_thread.start()
         run_widget_app(widget_mgr)
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         logger.info("Shutdown requested.")
+    except Exception:
+        logger.critical("Unhandled exception in Qt event loop", exc_info=True)
     finally:
         daemon.stop()
+        widget_mgr.stop()
 
 
 if __name__ == "__main__":

@@ -566,7 +566,13 @@ class WidgetManager(QObject):
             while True:
                 req = self._req_queue.get_nowait()
                 method, args, kwargs = req
-                getattr(self, f"_do_{method}")(*args, **kwargs)
+                try:
+                    getattr(self, f"_do_{method}")(*args, **kwargs)
+                except Exception:
+                    import logging
+                    logging.getLogger(__name__).exception(
+                        "Error processing widget request: %s", method
+                    )
         except queue.Empty:
             pass
 
