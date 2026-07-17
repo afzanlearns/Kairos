@@ -636,6 +636,7 @@ def _launch_if_due(session: Session) -> None:
         return
 
     if now < sched_dt:
+        click.echo(f"\nSession '{session.name}' scheduled at {time} — will launch then.")
         return
 
     has_apps = bool(session.apps)
@@ -643,7 +644,7 @@ def _launch_if_due(session: Session) -> None:
     if not has_apps and not has_todos:
         return
 
-    click.echo(f"\nSession '{session.name}' is due — launching...")
+    click.echo(f"\nLaunching '{session.name}' (scheduled at {time})...")
     if has_apps:
         launch_session(session.name, session.apps)
 
