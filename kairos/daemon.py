@@ -5,6 +5,7 @@ import sys
 import time
 import os
 import signal
+import threading
 from datetime import datetime, date, timedelta
 from typing import Optional
 
@@ -277,6 +278,8 @@ class Daemon:
         self._widget_manager = None
         self._launched_today: set[str] = set()
         self._startup_done = False
+        self._snoozed_until: dict[str, datetime] = {}
+        self._lock = threading.Lock()
 
     def set_widget_manager(self, mgr):
         self._widget_manager = mgr
@@ -377,6 +380,16 @@ class Daemon:
             key = f"{event.session_name}_{event.kind}_{now.strftime('%Y-%m-%d')}"
             if key in self._notified_set:
                 continue
+
+            # Skip snoozed events
+            snooze_key = f"{event.session_name}_heads_up_{now.strftime('%Y-%m-%d')}"
+            with self._lock:
+                snoozed_until = self._snoozed_until.get(snooze_key)
+                if snoozed_until is not None:
+                    if now < snoozed_until:
+                        continue
+                    del self._snoozed_until[snooze_key]
+
             self._notified_set.add(key)
 
             if event.kind == "heads_up":
@@ -413,7 +426,10 @@ class Daemon:
         widget.close()
 
     def _on_snooze(self, session: Session, widget):
-        logger.info("User snoozed session '%s'", session.name)
+        logger.info("User snoozed session '%s' for 5 minutes", session.name)
+        key = f"{session.name}_heads_up_{datetime.now().strftime('%Y-%m-%d')}"
+        with self._lock:
+            self._snoozed_until[key] = datetime.now() + timedelta(minutes=5)
         widget.close()
 
     def _trigger_launch(self, session: Session, kind: str):
