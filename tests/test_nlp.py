@@ -106,10 +106,10 @@ CASES = [
         "open youtube at 18:45",
         {"kind": "app_launch", "app": "chrome", "target": "youtube.com", "time": "18:45"},
     ),
-    # App keyword matched but no known app in mapping => low confidence
+    # App keyword matched but no known app in mapping => treat name as Chrome target
     (
         "open foobarapp",
-        {"kind": "app_launch", "app": None, "confidence": "low"},
+        {"kind": "app_launch", "app": "chrome", "target": "foobarapp", "confidence": "high"},
     ),
     # Recurrence: every day with time
     (

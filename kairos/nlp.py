@@ -224,7 +224,18 @@ def extract_app_target(line: str, line_lower: str, mapping: dict) -> tuple[Optio
             break
 
     if not matched_key:
-        return None, explicit_target
+        # No known app keyword found — try extracting target from remaining text
+        # e.g. "open antigravity" → target="antigravity", app="chrome"
+        for kw in ["open", "launch", "start", "play"]:
+            pattern = re.compile(r'\b' + re.escape(kw) + r'\s+(.+)', re.IGNORECASE)
+            m = pattern.search(line)
+            if m:
+                fallback_target = m.group(1).strip()
+                if fallback_target:
+                    return "chrome", fallback_target
+        if explicit_target:
+            return "chrome", explicit_target
+        return None, None
 
     entry = mapping[matched_key]
     app_type = entry.get("type", "chrome")
@@ -263,8 +274,6 @@ def assess_confidence(
             return "low"
         return "high"
     if kind == "app_launch":
-        if app is None:
-            return "low"
         return "high"
     return "high"
 
