@@ -118,10 +118,13 @@ def _print_session(session: Session) -> None:
 # ── CLI group ────────────────────────────────────────────────────
 
 
-@click.group()
-def cli():
+@click.group(invoke_without_command=True)
+@click.pass_context
+def cli(ctx):
     """Kairos — personal workflow orchestrator."""
     ensure_dirs()
+    if ctx.invoked_subcommand is None:
+        _show_daemon_status()
 
 
 # ── new ───────────────────────────────────────────────────────────
@@ -512,10 +515,9 @@ def config(quiet_window: str | None):
 
 # ── daemon-status ─────────────────────────────────────────────────
 
-@cli.command(name="daemon-status")
-def daemon_status():
-    """Check whether the Kairos daemon is running and healthy."""
-    from kairos.daemon import is_daemon_running, read_heartbeat, daemon_healthy
+def _show_daemon_status():
+    """Print daemon status to stdout."""
+    from kairos.daemon import is_daemon_running, read_heartbeat
     from kairos.config import DAEMON_HEARTBEAT_MAX_AGE
     from datetime import datetime
 
@@ -523,13 +525,11 @@ def daemon_status():
     hb = read_heartbeat()
 
     if not running:
-        msg = "stopped (no mutex)"
-        click.echo(f"Daemon: {msg}")
+        click.echo("Daemon: stopped")
         return
 
     if hb is None:
-        msg = "running (no heartbeat data yet)"
-        click.echo(f"Daemon: {msg}")
+        click.echo("Daemon: running (no heartbeat data yet)")
         return
 
     try:
@@ -545,6 +545,12 @@ def daemon_status():
             )
     except (KeyError, ValueError) as e:
         click.echo(f"Daemon: running (corrupt heartbeat: {e})")
+
+
+@cli.command(name="daemon-status")
+def daemon_status():
+    """Check whether the Kairos daemon is running and healthy."""
+    _show_daemon_status()
 
 
 # ── daemon-restart ────────────────────────────────────────────────
