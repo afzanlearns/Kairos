@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import shutil
 import logging
@@ -56,6 +57,28 @@ def _resolve_exe(name: str, display_name: str) -> str | None:
     exe_path = shutil.which(name)
     if exe_path:
         return exe_path
+    # Check common Windows install locations
+    common_paths = {
+        "chrome": [
+            os.path.expandvars(r"%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"),
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ],
+        "code": [
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+            r"C:\Program Files\Microsoft VS Code\Code.exe",
+        ],
+        "wt": [
+            os.path.expandvars(r"%LOCALAPPDATA%\Microsoft\WindowsApps\wt.exe"),
+        ],
+        "spotify": [
+            os.path.expandvars(r"%APPDATA%\Spotify\Spotify.exe"),
+            r"C:\Program Files\Spotify\Spotify.exe",
+        ],
+    }
+    for p in common_paths.get(name, []):
+        if os.path.isfile(p):
+            return p
     logger.warning("%s executable '%s' not found on PATH", display_name, name)
     print(f"  [WARN] {display_name} ('{name}') not found on PATH — skipping.")
     return None
