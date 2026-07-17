@@ -301,6 +301,10 @@ class Daemon:
         sessions = self._load_all_sessions()
         due_events = get_due_sessions(sessions, now, quiet, self._notified_set)
 
+        # Collect heads-up events by scheduled_time for batching
+        heads_up_buckets: dict[str, list[Session]] = {}
+        launch_sessions: list[Session] = []
+
         for event in due_events:
             session = next((s for s in sessions if s.name == event.session_name), None)
             if session is None:
@@ -313,15 +317,31 @@ class Daemon:
 
             if event.kind == "heads_up":
                 logger.info("Heads-up for session '%s'", session.name)
-                if self._widget_manager:
-                    self._widget_manager.show_heads_up(
-                        session,
-                        on_open_now=lambda w, s=session: self._on_open_now(s, w),
-                        on_snooze=lambda w, s=session: self._on_snooze(s, w),
-                    )
+                bucket_key = event.scheduled_time or "0"
+                heads_up_buckets.setdefault(bucket_key, []).append(session)
             elif event.kind in ("launch", "boot", "missed"):
                 logger.info("Launching session '%s' (kind=%s)", session.name, event.kind)
                 self._trigger_launch(session, event.kind)
+                launch_sessions.append(session)
+
+        # Dispatch batched heads-ups
+        if self._widget_manager:
+            for bucket_key, bucket_sessions in heads_up_buckets.items():
+                if len(bucket_sessions) == 1:
+                    s = bucket_sessions[0]
+                    self._widget_manager.show_heads_up(
+                        s,
+                        on_open_now=lambda w, sess=s: self._on_open_now(sess, w),
+                        on_snooze=lambda w, sess=s: self._on_snooze(sess, w),
+                    )
+                else:
+                    callbacks = []
+                    for s in bucket_sessions:
+                        callbacks.append((
+                            lambda w, sess=s: self._on_open_now(sess, w),
+                            lambda w, sess=s: self._on_snooze(sess, w),
+                        ))
+                    self._widget_manager.show_batch("heads_up", bucket_sessions, callbacks)
 
     def _on_open_now(self, session: Session, widget):
         logger.info("User clicked 'Open Now' for session '%s'", session.name)
