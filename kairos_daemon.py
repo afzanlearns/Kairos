@@ -54,7 +54,6 @@ def main():
     from kairos.daemon import Daemon
     daemon = Daemon()
     widget_mgr = WidgetManager()
-    widget_mgr.start()
     daemon.set_widget_manager(widget_mgr)
 
     try:

@@ -165,6 +165,8 @@ class WidgetManager(QObject):
         self._poll_timer: QTimer | None = None
 
     def start(self):
+        if self._running:
+            return
         self._running = True
         self._poll_timer = QTimer(self)
         self._poll_timer.timeout.connect(self._process_queue)
