@@ -478,17 +478,13 @@ def parse(file_path: str | None):
         lines = [l.rstrip("\r\n") for l in sys.stdin]
         text = "\n".join(lines)
     else:
-        click.echo("Enter session description (Ctrl+Z then Enter to finish):")
-        lines = []
-        try:
-            for line in sys.stdin:
-                lines.append(line.rstrip("\n"))
-        except KeyboardInterrupt:
-            click.echo("\nAborted.")
+        click.echo("Opening editor for multi-line input...")
+        text = click.edit()
+        if text is None:
+            click.echo("No input provided.")
             return
-        text = "\n".join(lines)
 
-    if not text.strip():
+    if not text or not text.strip():
         click.echo("No input provided.")
         return
 
@@ -511,12 +507,13 @@ def parse(file_path: str | None):
 
     unparsed = [i for i in result.items if i.kind == "unparsed"]
 
-    # Ask for session name
+    # Ask for session name (re-prompt until non-empty or explicit abort)
     click.echo()
-    session_name = click.prompt("Save all to session named", default="")
-    if not session_name:
-        click.echo("Aborted.")
-        return
+    while True:
+        session_name = click.prompt("Save all to session named", default="")
+        if session_name.strip():
+            break
+        click.echo("Session name cannot be empty. Enter a name or press Ctrl+C to abort.")
 
     _validate_name(session_name)
 
