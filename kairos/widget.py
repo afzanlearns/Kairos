@@ -150,23 +150,23 @@ class ReminderWidget(WidgetBase):
 
 
 class WidgetManager(QObject):
-    """Thread-safe widget manager that dispatches all Qt operations to the main thread.
+    """Thread-safe widget manager. Shows one notification at a time.
 
     Daemon threads push widget requests into a queue; a QTimer on the main
-    Qt event loop polls the queue and creates/updates widgets.
-    Widgets stack upward from the bottom-right, offset so they don't overlap.
+    Qt event loop polls the queue. Widgets are shown one at a time —
+    the next appears only after the previous is dismissed or auto-dismissed.
     """
-    _STACK_OFFSET = 20  # pixels between stacked widgets
+    _WIDGET_TIMEOUT_MS = 18000
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self._app: QApplication | None = None
-        self._widgets: list[SlidingWidget] = []
+        self._current: SlidingWidget | None = None
         self._running = False
         self._ready = threading.Event()
         self._req_queue: queue.Queue = queue.Queue()
+        self._pending_queue: list[tuple] = []
         self._poll_timer: QTimer | None = None
-        self._stack_y = 0
 
     def start(self):
         if self._running:
@@ -186,25 +186,20 @@ class WidgetManager(QObject):
         self._running = False
         if self._poll_timer:
             self._poll_timer.stop()
-        for w in list(self._widgets):
-            w.close()
-            w.deleteLater()
-        self._widgets.clear()
+        if self._current:
+            self._current.close()
+            self._current.deleteLater()
+            self._current = None
+        self._pending_queue.clear()
         if self._app:
             self._app.quit()
 
-    def _reposition_widget(self, widget: SlidingWidget):
-        screen = QApplication.primaryScreen().availableGeometry()
-        widget_height = widget.height()
-        offset_y = screen.bottom() - widget_height - 48 - self._stack_y
-        self._stack_y += widget_height + self._STACK_OFFSET
-        widget.move(widget.x(), offset_y)
-        widget._target_y = offset_y
-
-    def _on_widget_closed(self, widget):
-        if widget in self._widgets:
-            self._widgets.remove(widget)
-        widget.deleteLater()
+    def _on_widget_done(self):
+        if self._current:
+            self._current.close()
+            self._current.deleteLater()
+            self._current = None
+        QTimer.singleShot(300, self._show_next)
 
     def _process_queue(self):
         try:
@@ -227,34 +222,46 @@ class WidgetManager(QObject):
     def _do_heads_up(self, session: Session, on_open_now, on_snooze):
         if not self._running:
             return
-        widget = SlidingWidget(HeadsUpWidget(session, on_open_now, on_snooze))
-        self._reposition_widget(widget)
-        self._widgets.append(widget)
-        widget.show_slide_in()
-        QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
+        inner = HeadsUpWidget(session, on_open_now, on_snooze)
+        self._pending_queue.append(inner)
+        self._show_next()
 
     def _do_launched(self, session: Session):
         if not self._running:
             return
-        widget = SlidingWidget(LaunchedWidget(session))
-        self._reposition_widget(widget)
-        self._widgets.append(widget)
-        widget.show_slide_in()
-        QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
+        inner = LaunchedWidget(session)
+        self._pending_queue.append(inner)
+        self._show_next()
 
     def _do_reminder(self, text: str, on_done=None):
         if not self._running:
             return
-        widget = SlidingWidget(ReminderWidget(text, on_done))
-        self._reposition_widget(widget)
-        self._widgets.append(widget)
-        widget.show_slide_in()
-        QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
+        inner = ReminderWidget(text, on_done)
+        self._pending_queue.append(inner)
+        self._show_next()
 
-    def _auto_dismiss(self, widget):
-        if widget in self._widgets and not widget.inner.dismissed:
-            widget.slide_out()
-            self._on_widget_closed(widget)
+    def _show_next(self):
+        if self._current is not None:
+            return
+        if not self._pending_queue:
+            return
+        inner = self._pending_queue.pop(0)
+        widget = SlidingWidget(inner)
+        self._current = widget
+        self._position_widget(widget)
+        widget.show_slide_in()
+
+        dismiss = lambda w=widget, s=self: s._on_widget_done()
+        for btn in inner.findChildren(QPushButton):
+            btn.clicked.connect(lambda checked=False, d=dismiss: d())
+
+        QTimer.singleShot(self._WIDGET_TIMEOUT_MS, dismiss)
+
+    def _position_widget(self, widget: SlidingWidget):
+        screen = QApplication.primaryScreen().availableGeometry()
+        y = (screen.bottom() - screen.top()) // 2 - widget.height() // 2
+        widget._target_y = y
+        widget.move(screen.right(), y)
 
 
 class SlidingWidget(QWidget):
@@ -317,16 +324,17 @@ class SlidingWidget(QWidget):
 def show_widgets_cli(
     launched_sessions: list[Session] | None = None,
     reminders: list[tuple[str, callable]] | None = None,
-    timeout_ms: int = 8000,
+    timeout_per_widget_ms: int = 10000,
 ):
     """Show widgets from a CLI context using a temporary QApplication.
 
-    Creates a short-lived Qt event loop, displays the given widgets,
-    and exits after *timeout_ms* or when all widgets are dismissed.
+    Creates a short-lived Qt event loop, displays widgets one at a time
+    sequentially, and exits when all are dismissed or the last times out.
     """
     app = QApplication.instance() or QApplication(sys.argv)
     mgr = WidgetManager()
     mgr._app = app
+    mgr._WIDGET_TIMEOUT_MS = timeout_per_widget_ms
     mgr.start()
     mgr.mark_ready()
 
@@ -337,11 +345,12 @@ def show_widgets_cli(
         for text, on_done in reminders:
             mgr.show_reminder(text, on_done or (lambda w: None))
 
-    # Process queue immediately so widgets appear before event loop
     mgr._process_queue()
 
-    if mgr._widgets:
-        QTimer.singleShot(timeout_ms, app.quit)
+    total_widgets = len(mgr._pending_queue)
+    if total_widgets > 0:
+        total_timeout = (total_widgets * timeout_per_widget_ms) + 2000
+        QTimer.singleShot(total_timeout, app.quit)
         app.exec()
 
 
