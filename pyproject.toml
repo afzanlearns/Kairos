@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kairos"
+version = "0.1.0"
+description = "Personal workflow orchestrator for Windows"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.0",
+    "pydantic>=2.0",
+    "PyQt6>=6.5",
+    "pystray>=0.19",
+    "dateparser>=1.1",
+    "psutil>=5.9",
+]
+
+[project.scripts]
+kairos = "kairos.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["kairos", "kairos.*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]

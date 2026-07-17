@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+*.pyo
+.kairos/
+kairos.egg-info/
+.pytest_cache/
+*.egg-info/
+dist/
+build/
