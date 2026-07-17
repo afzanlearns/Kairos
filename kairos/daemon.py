@@ -227,9 +227,6 @@ class Daemon:
         logger.info("Kairos daemon started (PID %d)", os.getpid())
 
         try:
-            # ── Wait for Qt to be ready, then catch-up ──
-            if self._widget_manager:
-                self._widget_manager.wait_ready(timeout=10)
             self._run_catch_up()
             self._startup_done = True
 
@@ -305,14 +302,12 @@ class Daemon:
 
             if event.kind == "heads_up":
                 logger.info("Heads-up for session '%s'", session.name)
-                if self._widget_manager and self._widget_manager.wait_ready(timeout=0):
+                if self._widget_manager:
                     self._widget_manager.show_heads_up(
                         session,
-                        on_open_now=lambda w: self._on_open_now(session, w),
-                        on_snooze=lambda w: self._on_snooze(session, w),
+                        on_open_now=lambda w, s=session: self._on_open_now(s, w),
+                        on_snooze=lambda w, s=session: self._on_snooze(s, w),
                     )
-                else:
-                    logger.info("Widgets not ready — skipping heads-up for '%s'", session.name)
             elif event.kind in ("launch", "boot", "missed"):
                 logger.info("Launching session '%s' (kind=%s)", session.name, event.kind)
                 self._trigger_launch(session, event.kind)
@@ -338,22 +333,17 @@ class Daemon:
         ))
         save_session(session)
 
-        if self._widget_manager and self._widget_manager.wait_ready(timeout=0):
+        if self._widget_manager:
             self._widget_manager.show_launched(session)
-        else:
-            print(f"  Launched: {session.name}")
 
         # Show pending todos
         pending = [t for t in session.todos if not t.completed_today]
-        if pending:
-            if self._widget_manager and self._widget_manager.wait_ready(timeout=0):
-                for todo in pending:
-                    self._widget_manager.show_reminder(
-                        todo.text,
-                        on_done=lambda w: self._on_todo_done(session, todo, w),
-                    )
-            else:
-                print(f"  Pending: {len(pending)} todo(s)")
+        if pending and self._widget_manager:
+            for todo in pending:
+                self._widget_manager.show_reminder(
+                    todo.text,
+                    on_done=lambda w, s=session, t=todo: self._on_todo_done(s, t, w),
+                )
 
     def _on_todo_done(self, session: Session, todo, widget):
         todo.completed_today = True

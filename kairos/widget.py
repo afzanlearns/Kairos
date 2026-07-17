@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import sys
 import time
+import queue
 import logging
 import threading
 from datetime import datetime
 from typing import Optional
 
 from PyQt6.QtCore import (
-    Qt, QPropertyAnimation, QEasingCurve, QRect, QPoint, QTimer, pyqtProperty
+    Qt, QPropertyAnimation, QEasingCurve, QRect, QPoint, QTimer, QObject, pyqtProperty
 )
 from PyQt6.QtGui import QFont, QColor, QPainter, QPalette
 from PyQt6.QtWidgets import (
@@ -148,62 +149,78 @@ class ReminderWidget(WidgetBase):
         self.add_dismiss()
 
 
-class WidgetManager:
-    def __init__(self):
+class WidgetManager(QObject):
+    """Thread-safe widget manager that dispatches all Qt operations to the main thread.
+
+    Daemon threads push widget requests into a queue; a QTimer on the main
+    Qt event loop polls the queue and creates/updates widgets.
+    """
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self._app: QApplication | None = None
         self._widgets: list[SlidingWidget] = []
         self._running = False
         self._ready = threading.Event()
-        self._pending: list[tuple[str, tuple, dict]] = []
-
-    @property
-    def thread(self):
-        return self._thread
+        self._req_queue: queue.Queue = queue.Queue()
+        self._poll_timer: QTimer | None = None
 
     def start(self):
         self._running = True
+        self._poll_timer = QTimer(self)
+        self._poll_timer.timeout.connect(self._process_queue)
+        self._poll_timer.start(100)
 
     def mark_ready(self):
         self._ready.set()
-        self._flush_pending()
 
     def wait_ready(self, timeout: float = 5.0) -> bool:
         return self._ready.wait(timeout)
 
-    def _flush_pending(self):
-        pending = self._pending[:]
-        self._pending.clear()
-        for method_name, args, kwargs in pending:
-            getattr(self, method_name)(*args, **kwargs)
-
     def stop(self):
         self._running = False
+        if self._poll_timer:
+            self._poll_timer.stop()
         for w in self._widgets:
             w.close()
         if self._app:
             self._app.quit()
 
+    def _process_queue(self):
+        try:
+            while True:
+                req = self._req_queue.get_nowait()
+                method, args, kwargs = req
+                getattr(self, f"_do_{method}")(*args, **kwargs)
+        except queue.Empty:
+            pass
+
     def show_heads_up(self, session: Session, on_open_now=None, on_snooze=None):
-        if not self._ready.is_set():
-            self._pending.append(("show_heads_up", (session, on_open_now, on_snooze), {}))
+        self._req_queue.put(("heads_up", (session, on_open_now, on_snooze), {}))
+
+    def show_launched(self, session: Session):
+        self._req_queue.put(("launched", (session,), {}))
+
+    def show_reminder(self, text: str, on_done=None):
+        self._req_queue.put(("reminder", (text, on_done), {}))
+
+    def _do_heads_up(self, session: Session, on_open_now, on_snooze):
+        if not self._running:
             return
         widget = SlidingWidget(HeadsUpWidget(session, on_open_now, on_snooze))
         self._widgets.append(widget)
         widget.show_slide_in()
         QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
 
-    def show_launched(self, session: Session):
-        if not self._ready.is_set():
-            self._pending.append(("show_launched", (session,), {}))
+    def _do_launched(self, session: Session):
+        if not self._running:
             return
         widget = SlidingWidget(LaunchedWidget(session))
         self._widgets.append(widget)
         widget.show_slide_in()
         QTimer.singleShot(18000, lambda: self._auto_dismiss(widget))
 
-    def show_reminder(self, text: str, on_done=None):
-        if not self._ready.is_set():
-            self._pending.append(("show_reminder", (text, on_done), {}))
+    def _do_reminder(self, text: str, on_done=None):
+        if not self._running:
             return
         widget = SlidingWidget(ReminderWidget(text, on_done))
         self._widgets.append(widget)
@@ -280,6 +297,7 @@ def show_widgets_cli(
     app = QApplication.instance() or QApplication(sys.argv)
     mgr = WidgetManager()
     mgr._app = app
+    mgr.start()
     mgr.mark_ready()
 
     if launched_sessions:
@@ -288,6 +306,9 @@ def show_widgets_cli(
     if reminders:
         for text, on_done in reminders:
             mgr.show_reminder(text, on_done or (lambda w: None))
+
+    # Process queue immediately so widgets appear before event loop
+    mgr._process_queue()
 
     if mgr._widgets:
         QTimer.singleShot(timeout_ms, app.quit)
@@ -299,4 +320,5 @@ def run_widget_app(widget_manager: WidgetManager):
     app.setQuitOnLastWindowClosed(False)
     widget_manager._app = app
     widget_manager.mark_ready()
+    widget_manager.start()
     app.exec()
