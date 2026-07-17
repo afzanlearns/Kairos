@@ -613,70 +613,17 @@ def parse(file_path: str | None):
         save_session(session)
         click.echo(f"Saved {len(result.items)} item(s) to session '{session_name}'.")
 
-        # Launch only if the session's scheduled time is now or past
-        _launch_if_due(session)
+        next_steps = []
+        if session.schedule.time:
+            next_steps.append(f"daemon will launch at {session.schedule.time}")
+        if session.schedule.on_boot:
+            next_steps.append("launches on boot")
+        if next_steps:
+            click.echo(f"  -> {', '.join(next_steps)}")
+        else:
+            click.echo("  -> run 'kairos start {name}' to launch now".format(name=session_name))
     else:
         click.echo("Aborted.")
-
-
-def _launch_if_due(session: Session) -> None:
-    """Launch apps and show reminders only if the session is scheduled for now
-    or earlier today. Future items wait for the daemon."""
-    from datetime import datetime, date
-
-    now = datetime.now()
-    time = session.schedule.time
-    if not time:
-        return
-
-    try:
-        h, m = time.split(":")
-        sched_dt = now.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
-    except (ValueError, AttributeError):
-        return
-
-    if now < sched_dt:
-        click.echo(f"\nSession '{session.name}' scheduled at {time} — will launch then.")
-        return
-
-    has_apps = bool(session.apps)
-    has_todos = bool(session.todos)
-    if not has_apps and not has_todos:
-        return
-
-    click.echo(f"\nLaunching '{session.name}' (scheduled at {time})...")
-    if has_apps:
-        launch_session(session.name, session.apps)
-
-    session.last_run = now.isoformat(timespec="seconds")
-    session.history.append(
-        SessionLog(
-            date=str(date.today()),
-            status="launched",
-            launched_at=now.isoformat(timespec="seconds"),
-        )
-    )
-    save_session(session)
-
-    try:
-        pending = [t for t in session.todos if not t.completed_today]
-        reminders = [(t.text, lambda w: None) for t in pending]
-        show_widgets_cli(
-            launched_sessions=[session] if has_apps else None,
-            reminders=reminders,
-            timeout_ms=8000,
-        )
-        return
-    except Exception as e:
-        logger.warning("Widget display failed, falling back to terminal: %s", e)
-
-    if session.note:
-        click.echo(f"\n  Note: {session.note}")
-    pending = [t for t in session.todos if not t.completed_today]
-    if pending:
-        click.echo(f"\n  Pending todos ({len(pending)}):")
-        for t in pending:
-            click.echo(f"    [ ] {t.text}")
 
 
 # ── now ────────────────────────────────────────────────────────────
