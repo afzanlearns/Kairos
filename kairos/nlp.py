@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import logging
+from datetime import date, time
 from typing import Optional
 
 import dateparser
@@ -65,6 +66,111 @@ def strip_fillers(line: str, stopwords: list[str]) -> str:
 
 
 # ── Stage 2: Extract time ────────────────────────────────────────
+
+
+WEEKDAY_FULL = {
+    "monday": 0, "tuesday": 1, "wednesday": 2, "thursday": 3,
+    "friday": 4, "saturday": 5, "sunday": 6,
+}
+MONTH_MAP = {
+    "january": 1, "february": 2, "march": 3, "april": 4, "may": 5, "june": 6,
+    "july": 7, "august": 8, "september": 9, "october": 10, "november": 11, "december": 12,
+    "jan": 1, "feb": 2, "mar": 3, "apr": 4, "jun": 6, "jul": 7,
+    "aug": 8, "sep": 9, "oct": 10, "nov": 11, "dec": 12,
+}
+
+
+def _next_weekday(wd: int, after: Optional[date] = None) -> date:
+    """Return the next occurrence of weekday wd (0=Mon) from after."""
+    after = after or date.today()
+    days_ahead = wd - after.weekday()
+    if days_ahead <= 0:
+        days_ahead += 7
+    return after.replace() + __import__("datetime").timedelta(days=days_ahead)
+
+
+def extract_date(line: str) -> tuple[Optional[str], str]:
+    """Returns (date_str, cleaned_line) where date_str is YYYY-MM-DD for a
+    one-shot future date found in the line. Runs before extract_time so the
+    date words are removed before time extraction.
+
+    Only extracts explicit future date references: 'tomorrow', 'next friday',
+    'july 20', ISO dates. Bare weekday names like 'monday' (without 'next'/'this')
+    are left for extract_recurrence to handle.
+    """
+    cleaned = line.strip()
+    if not cleaned:
+        return None, line
+
+    lower = cleaned.lower()
+
+    # Skip if recurrence keywords present — 'every monday' is not a specific date
+    if re.search(r'\b(every|each|daily|weekdays)\b', lower):
+        return None, line
+
+    # 1. ISO date YYYY-MM-DD
+    m = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', cleaned)
+    if m:
+        date_str = m.group(1)
+        cleaned = (cleaned[:m.start()] + cleaned[m.end():]).strip()
+        return date_str, cleaned
+
+    # 2. "tomorrow" / "today"
+    m = re.search(r'\b(tomorrow|today)\b', lower)
+    if m:
+        td = date.today()
+        word = m.group(1)
+        parsed = dateparser.parse(
+            word,
+            settings={"PREFER_DATES_FROM": "future", "RETURN_AS_TIMEZONE_AWARE": False},
+        )
+        if parsed:
+            date_str = parsed.date().isoformat()
+            # Remove the matched word from cleaned (preserve case)
+            idx = m.start()
+            end = len(line[:idx]) + len(word)
+            cleaned = (line[:idx] + line[end:]).strip()
+            return date_str, cleaned
+
+    # 3. "next <weekday>" / "this <weekday>"
+    m = re.search(r'\b(next|this)\s+(mon|tue|wed|thu|fri|sat|sun)\w*', lower)
+    if m:
+        prefix = m.group(1)
+        day_abbrev = m.group(2)
+        # Map abbreviation to full name
+        full_name = next((k for k, v in WEEKDAY_FULL.items() if k.startswith(day_abbrev)), None)
+        if full_name is not None:
+            wd = WEEKDAY_FULL[full_name]
+            result_date = _next_weekday(wd)
+            date_str = result_date.isoformat()
+            # Remove the matched phrase from cleaned
+            cleaned = (line[:m.start()] + line[m.end():]).strip()
+            return date_str, cleaned
+
+    # 4. "on <month> <day>" e.g. "july 20", "on jul 20"
+    m = re.search(
+        r'(?:\bon\s+)?(jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|jul(?:y)?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\s+(\d{1,2})\b',
+        lower,
+    )
+    if m:
+        month_name = m.group(1)
+        day_num = int(m.group(2))
+        month_num = MONTH_MAP.get(month_name)
+        if month_num and 1 <= day_num <= 31:
+            # Build date in current year; if already passed, use next year
+            try:
+                candidate = date(date.today().year, month_num, day_num)
+            except ValueError:
+                candidate = None
+            if candidate and candidate <= date.today():
+                candidate = date(date.today().year + 1, month_num, day_num)
+            if candidate:
+                date_str = candidate.isoformat()
+                # Remove matched text from original line (preserve case)
+                cleaned = (line[:m.start()] + line[m.end():]).strip()
+                return date_str, cleaned
+
+    return None, line
 
 
 def extract_time(line: str) -> tuple[Optional[str], str]:
@@ -297,6 +403,9 @@ def parse_line(line: str) -> ParsedLine:
 
     cleaned_lower = cleaned.lower()
 
+    # Stage 1b: extract one-shot future date (removes date words before time extraction)
+    date_val, cleaned = extract_date(cleaned)
+
     # Stage 2: extract time, removing the matched span from the working string
     time_val, line_for_stages = extract_time(cleaned)
     line_for_stages_lower = line_for_stages.lower()
@@ -332,10 +441,11 @@ def parse_line(line: str) -> ParsedLine:
     if kind == "todo" and not time_val and not on_boot:
         confidence = "low"
 
-    # Determine if recurrence confirmation is needed: has a time but no days and not on_boot
+    # Determine if recurrence confirmation is needed: has a time but no days/date and not on_boot
     needs_recurrence_confirmation = (
         time_val is not None
         and days is None
+        and date_val is None
         and not on_boot
         and kind != "unparsed"
         and kind != "boot_reminder"
@@ -344,6 +454,7 @@ def parse_line(line: str) -> ParsedLine:
     return ParsedLine(
         kind=kind,
         time=time_val,
+        date=date_val,
         app=app_type,
         target=target,
         text=text or raw,

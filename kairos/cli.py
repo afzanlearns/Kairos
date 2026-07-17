@@ -216,6 +216,8 @@ def list_():
         schedule = ""
         if session.schedule.time:
             schedule = f" @ {session.schedule.time}"
+            if session.schedule.date:
+                schedule += f" on {session.schedule.date}"
             if session.schedule.days:
                 schedule += f" ({', '.join(session.schedule.days)})"
         if session.schedule.on_boot:
@@ -363,13 +365,16 @@ def done(name: str, todo_text: str):
 @cli.command()
 @click.argument("name")
 @click.option("--at", "at_time", default=None, help="Time in HH:MM format")
+@click.option("--date", "date_str", default=None, help="Date in YYYY-MM-DD format")
 @click.option("--days", default=None, help="Comma-separated weekdays (mon,tue,...)")
 @click.option("--on-boot", "on_boot", is_flag=True, default=None, help="Run on boot")
-def schedule(name: str, at_time: str | None, days: str | None, on_boot: bool | None):
+def schedule(name: str, at_time: str | None, date_str: str | None, days: str | None, on_boot: bool | None):
     """Set scheduling for a session."""
     session = _require_session(name)
     if at_time is not None:
         session.schedule.time = at_time
+    if date_str is not None:
+        session.schedule.date = date_str
     if days is not None:
         session.schedule.days = [d.strip().lower() for d in days.split(",") if d.strip()]
     if on_boot is not None:
@@ -608,9 +613,10 @@ def parse(file_path: str | None):
         elif item.kind in ("todo", "boot_reminder"):
             session.todos.append(TodoItem(text=item.text or item.raw))
 
-        if item.time or item.days is not None or item.on_boot:
+        if item.time or item.days is not None or item.on_boot or item.date:
             session.schedule = ScheduleConfig(
                 time=item.time,
+                date=item.date,
                 days=item.days or [],
                 on_boot=item.on_boot,
             )

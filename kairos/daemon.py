@@ -95,6 +95,9 @@ def get_due_sessions(
         # Time-based sessions
         if not schedule.time:
             continue
+        # Specific date: only fire if today matches
+        if schedule.date and schedule.date != today_str:
+            continue
         # Empty days = "once" (run today); non-empty days must include today
         if schedule.days and weekday_str not in schedule.days:
             continue
@@ -262,9 +265,9 @@ class Daemon:
             if not session.schedule.time:
                 continue
             # Only catch up repeating sessions (have days set).
-            # "Once" sessions (empty days) should fire at their exact time only,
-            # not every time the daemon restarts.
-            if not session.schedule.days:
+            # "Once" sessions (empty days) and date-specific sessions
+            # should fire at their exact time only, not every time the daemon restarts.
+            if not session.schedule.days or session.schedule.date:
                 continue
             if weekday_str not in session.schedule.days:
                 continue

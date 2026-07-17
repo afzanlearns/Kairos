@@ -22,6 +22,7 @@ class TodoItem(BaseModel):
 
 class ScheduleConfig(BaseModel):
     time: Optional[str] = None
+    date: Optional[str] = None  # YYYY-MM-DD for one-shot future dates
     days: list[str] = []
     on_boot: bool = False
 
@@ -57,6 +58,7 @@ class DueEvent(BaseModel):
 class ParsedLine(BaseModel):
     kind: str  # "app_launch", "todo", "boot_reminder", "unparsed"
     time: Optional[str] = None
+    date: Optional[str] = None  # YYYY-MM-DD for one-shot future dates
     app: Optional[str] = None
     target: Optional[str] = None
     text: Optional[str] = None

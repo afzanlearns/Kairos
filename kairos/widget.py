@@ -5,6 +5,7 @@ import time
 import queue
 import logging
 import threading
+import winsound
 from datetime import datetime
 from typing import Optional
 
@@ -255,6 +256,7 @@ class WidgetManager(QObject):
             return
         if not self._pending_queue:
             return
+        winsound.MessageBeep(winsound.MB_OK)
         inner = self._pending_queue.pop(0)
         widget = SlidingWidget(inner)
         self._current = widget
