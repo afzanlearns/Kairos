@@ -5,6 +5,7 @@ import pytest
 from kairos.nlp import (
     strip_fillers, extract_time, classify_kind,
     extract_app_target, parse_line, _load_app_mapping,
+    strip_trailing_connectors,
 )
 
 MAPPING = _load_app_mapping()
@@ -66,6 +67,30 @@ def test_classify_boot():
 
 def test_classify_unparsed():
     assert classify_kind("some random text", MAPPING) == "unparsed"
+
+
+def test_github_mapped_in_default():
+    """'github' in the default mapping resolves to chrome -> github.com."""
+    mapping_with_github = {
+        "youtube": {"type": "chrome", "url": "youtube.com"},
+        "github": {"type": "chrome", "url": "github.com"},
+    }
+    app, target = extract_app_target("open GitHub at", "open github at", mapping_with_github)
+    assert app == "chrome"
+    assert target == "github.com"
+
+
+def test_strip_trailing_connectors_shared():
+    """Shared utility strips trailing 'at/for/on/in/by/with/about'
+    identically regardless of which parsing stage calls it."""
+    assert strip_trailing_connectors("eat at") == "eat"
+    assert strip_trailing_connectors("GitHub at") == "GitHub"
+    assert strip_trailing_connectors("notion at") == "notion"
+    assert strip_trailing_connectors("check for") == "check"
+    assert strip_trailing_connectors("read about") == "read"
+    assert strip_trailing_connectors("plain text") == "plain text"
+    assert strip_trailing_connectors("") == ""
+    assert strip_trailing_connectors("  ") == ""
 
 
 CASES = [
@@ -130,6 +155,22 @@ CASES = [
     (
         "Remind me to call the dentist at 6pm",
         {"kind": "todo", "time": "18:00", "days": None, "needs_recurrence_confirmation": True},
+    ),
+    # Regression: 'at' must not leak into app target or session name
+    # 'github' is in the default mapping as chrome -> github.com;
+    # this test uses whatever mapping is on disk.
+    (
+        "open GitHub at 17:47",
+        {"kind": "app_launch", "app": "chrome", "time": "17:47"},
+    ),
+    (
+        "open notion at 9am",
+        {"kind": "app_launch", "app": "chrome", "target": "notion", "time": "09:00"},
+    ),
+    # Regression: 'for' also stripped
+    (
+        "open something for",
+        {"kind": "app_launch", "app": "chrome", "target": "something"},
     ),
 ]
 

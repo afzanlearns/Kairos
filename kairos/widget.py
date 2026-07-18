@@ -361,7 +361,7 @@ class MultiWidget(WidgetBase):
 # ── SlidingWidget ─────────────────────────────────────────────────
 
 
-class SlidingWidget(QWidget):
+class SlidingWidget(QFrame):
     """Wrapper that provides slide-in/out animation for a WidgetBase.
     Supports stacking: dimmed opacity for back widgets.
     Enforces always-on-top z-order via periodic raise_()."""

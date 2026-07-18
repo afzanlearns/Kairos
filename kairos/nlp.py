@@ -285,6 +285,21 @@ def extract_recurrence(line_lower: str, phrases: dict) -> tuple[Optional[list[st
     return None, False, cleaned
 
 
+# ── Shared connector-word stripping ──────────────────────────────
+
+
+_TRAILING_CONNECTORS = re.compile(
+    r'\s+(?:at|for|on|in|by|with|about)\s*$', re.IGNORECASE
+)
+
+
+def strip_trailing_connectors(text: str) -> str:
+    """Remove standalone connector/preposition words from the end of text.
+    Used by both the reminder-text and app-target extraction paths so
+    they stay in sync (e.g. 'eat at' → 'eat', 'GitHub at' → 'GitHub')."""
+    return _TRAILING_CONNECTORS.sub('', text).strip()
+
+
 # ── Stage 3: Classify kind ───────────────────────────────────────
 
 
@@ -317,8 +332,7 @@ def extract_app_target(line: str, line_lower: str, mapping: dict) -> tuple[Optio
         for kw in ["reminder", "remind me", "remember", "don't forget", "make sure"]:
             raw_target = re.sub(r'\s*' + re.escape(kw) + r'\s*', ' ', raw_target, flags=re.IGNORECASE)
         raw_target = raw_target.strip()
-        # Strip trailing standalone prepositions left after time/keyword removal
-        raw_target = re.sub(r'\s+(?:at|for|on|in|by|with|about)\s*$', '', raw_target, flags=re.IGNORECASE).strip()
+        raw_target = strip_trailing_connectors(raw_target)
         if raw_target:
             explicit_target = raw_target
 
@@ -338,7 +352,9 @@ def extract_app_target(line: str, line_lower: str, mapping: dict) -> tuple[Optio
             if m:
                 fallback_target = m.group(1).strip()
                 if fallback_target:
-                    return "chrome", fallback_target
+                    fallback_target = strip_trailing_connectors(fallback_target)
+                    if fallback_target:
+                        return "chrome", fallback_target
         if explicit_target:
             return "chrome", explicit_target
         return None, None
@@ -430,8 +446,7 @@ def parse_line(line: str) -> ParsedLine:
         for kw in ["remind me", "reminder", "don't forget", "make sure", "remember", "regarding", "about", "set a", "set an", "to"]:
             text = re.sub(r'\b' + re.escape(kw) + r'\b', '', text, flags=re.IGNORECASE)
         text = re.sub(r'\s+', ' ', text).strip().strip(",").strip(".").strip()
-        # Strip trailing prepositions left after keyword removal
-        text = re.sub(r'\s+(?:at|for|on|in|by|with|about)\s*$', '', text, flags=re.IGNORECASE).strip()
+        text = strip_trailing_connectors(text)
         if not text or len(text) < 3 or text.lower() in ("to", "set", "a", "an", "the", "for", "set a", "remind"):
             text = raw
 

@@ -23,6 +23,7 @@ DEFAULT_APP_MAPPING = {
     "wt": {"type": "terminal"},
     "chrome": {"type": "chrome"},
     "browser": {"type": "chrome"},
+    "github": {"type": "chrome", "url": "github.com"},
 }
 
 DEFAULT_STOPWORDS = ["mate", "please", "like", "um", "just", "could", "would", "maybe"]
