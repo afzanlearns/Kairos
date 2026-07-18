@@ -1,171 +1,184 @@
 # Kairos
 
-A personal workflow orchestrator for Windows. Define named "sessions" (e.g. `portfolio`, `java-study`, `wind-down`) -- each a set of apps, browser tabs, terminal commands, and reminders. Kairos runs as a silent background daemon that pops an on-screen widget to launch a session, remind you of a to-do, or catch up on anything missed since boot.
+**Kairos remembers your workspace so you can continue working instead of reconstructing it.**
 
-## Philosophy
+Kairos is a personal workflow orchestrator for Windows. Define a "session" — a bundle of apps, browser tabs, terminal commands, and reminders — once, and Kairos launches it for you automatically, exactly when you need it. No more manually reopening the same fifteen things every morning. No more forgetting the thing you meant to do at 7pm. Kairos runs quietly in the background and taps you on the shoulder, right on time.
 
-- **Deterministic, not AI-guessing.** No LLM calls, no cloud dependency. Every decision is traceable to an explicit rule.
-- **Daemon-driven, not user-driven.** A background process decides when to surface UI. You never type a command to "check now."
-- **Confirm before acting on parsed input.** Anything derived from natural language is shown to you for confirmation before it's saved.
-- **Local-first.** Everything lives in local JSON files and SQLite. No accounts, no servers.
-- **Aesthetic consistency.** Dark background, flat 1px borders, monospace fonts, muted tones.
+```
+$ kairos parse
+Open vscode at 9am
+Remind me to check GitHub notifications every weekday at 9am
+Bootup reminder regarding client email
+```
+That's it. Kairos parses it, confirms what it understood, and from then on it just happens — no scheduling app to check, no command to remember.
+
+---
+
+## Why
+
+Every developer has the same fifteen-click morning ritual: open the IDE, open the right folder, start the dev server, open the right tabs, maybe open Spotify. Kairos exists to remove that ritual entirely — you define your workflow once, and Kairos owns making sure it shows up, on schedule, without you lifting a finger.
+
+The design is deliberately simple and transparent:
+
+- **Deterministic, not AI-guessing.** No LLM calls, no cloud dependency. Every decision — what fires, when, and what it does — is traceable to an explicit rule you can read in the code.
+- **Daemon-driven, not user-driven.** A background process decides when to surface a reminder. You never type a command to "check now" — that would just make this a to-do list you have to remember to open.
+- **Confirm before acting on parsed input.** Anything derived from natural language is shown to you for confirmation before anything is saved — Kairos never silently guesses.
+- **Local-first.** Everything lives in local JSON files and SQLite. No accounts, no servers, nothing leaves your machine.
+
+---
+
+## Features
+
+- **Sessions** — named, reusable bundles of apps (VS Code, Windows Terminal, Chrome tabs, Spotify), todos, and a note, each schedulable independently.
+- **Natural language input** — `kairos parse` turns a plain-English, multi-line description into fully scheduled sessions, including recurrence ("every day," "every Mon/Wed/Fri," "weekdays") and specific future dates ("tomorrow at 3pm," "next friday," "2026-07-20").
+- **A background daemon that's actually always on** — auto-starts at login, self-heals if it ever crashes (via a lightweight supervisor process), and catches up on anything scheduled while your laptop was off.
+- **On-screen widgets, not just terminal output** — a heads-up 5 minutes before a session fires, a launch confirmation as apps open, and standalone reminder popups, all frameless, always-on-top, and styled dark/minimal.
+- **Smart handling of collisions** — sessions due at the exact same time merge into a single widget instead of piling up; widgets stack cleanly and cap out with a "+N more" indicator rather than fading into illegibility.
+- **Quiet hours** — no notifications during a window you define, so a missed-and-caught-up reminder doesn't wake you at 2am.
+- **Analytics** — `kairos stats` tracks how often you actually run vs. skip a session over time.
+
+---
 
 ## Installation
 
 ```bash
+git clone https://github.com/afzanlearns/Kairos.git
+cd Kairos
 pip install -e .
 ```
 
-## CLI Command Reference
+Requires Python 3.11+ and Windows (the app-launch dispatch, daemon auto-start, and notification system are all Windows-specific in this version).
 
-### Session Management
+---
 
+## Quick Start
+
+**1. Describe your morning in plain English:**
+```bash
+kairos parse
 ```
-kairos new <name>                          Create a new empty session
-kairos list                                List all defined sessions
-kairos show <name>                         Pretty-print a session
-kairos edit <name> --remove-app <idx>      Remove an app by index
-kairos edit <name> --remove-todo <idx>     Remove a todo by index
-kairos note <name> "<text>"                Set a session note
-kairos start <name>                        Launch every app in the session
+Your default editor opens — type what you want, save, and close:
+```
+Open vscode at 9am
+Open localhost:3000 at 9am
+Remind me to check GitHub at 9am
+```
+Kairos shows you exactly what it understood and asks for confirmation before saving anything.
+
+**2. Start the daemon so it actually runs on its own:**
+```bash
+python kairos_supervisor.py --register
+```
+This registers Kairos to start automatically at login and keeps it alive — if the daemon process ever dies for any reason, the supervisor relaunches it within seconds, no manual intervention required.
+
+**3. That's it.** From here on, sessions fire on their own. Check in anytime with:
+```bash
+kairos today       # what's scheduled today
+kairos next        # what's coming up next
+kairos daemon-status   # confirm the daemon is alive and healthy
 ```
 
-### Adding Items
+---
 
-```
-kairos add <name> --code <path>
-kairos add <name> --terminal --cwd <path> --run <command>
-kairos add <name> --chrome <url> [--chrome <url> ...]
-kairos add <name> --spotify [<playlist>]
-kairos add <name> --todo "<text>"
-kairos done <name> "<todo text>"           Mark a todo complete (fuzzy match)
-```
+## CLI Reference
+
+### Session management
+| Command | Purpose |
+|---|---|
+| `kairos new <name>` | Create an empty session |
+| `kairos add <name> --code/--terminal/--chrome/--spotify/--todo ...` | Add an item to a session |
+| `kairos list` | List all sessions |
+| `kairos show <name>` | Show a session's full contents |
+| `kairos edit <name> --remove-app/--remove-todo <idx>` | Remove an item |
+| `kairos note <name> "<text>"` | Attach a note |
+| `kairos start <name>` | Launch a session right now, manually |
+| `kairos done <name> "<todo>"` | Mark a todo complete |
 
 ### Scheduling
+| Command | Purpose |
+|---|---|
+| `kairos schedule <name> --at HH:MM --days mon,wed,fri` | Set a recurring schedule |
+| `kairos schedule <name> --on-boot` | Fire once, at daemon startup, regardless of time |
+| `kairos schedule <name> --date YYYY-MM-DD` | One-time, date-specific schedule |
+| `kairos skip <name>` | Skip today only, without touching future runs |
+| `kairos today` / `kairos next` | See what's due |
+
+### Natural language
+| Command | Purpose |
+|---|---|
+| `kairos parse` | Describe sessions and reminders in plain English, with recurrence and dates inferred automatically |
+| `kairos parse --file <path>` | Same, from a text file |
+
+### Daemon
+| Command | Purpose |
+|---|---|
+| `python kairos_supervisor.py --register` | Register the self-healing daemon to auto-start at login |
+| `kairos daemon-status` | Check whether the daemon is alive and when it last checked in |
+| `kairos daemon-restart` | Force-restart the daemon on demand |
+
+### Analytics & config
+| Command | Purpose |
+|---|---|
+| `kairos stats <name>` | Run/skip/completion history for a session |
+| `kairos config --quiet HH:MM-HH:MM` | Set a quiet-hours window |
+
+---
+
+## How it works
 
 ```
-kairos schedule <name> --at HH:MM --days mon,tue,wed,...
-kairos schedule <name> --on-boot
-kairos today                               List today's sessions
-kairos next                                Show the next upcoming session
-kairos skip <name>                         Skip a session for today
+kairos parse ──► rule-based NLP pipeline ──► session JSON (~/.kairos/sessions/)
+                                                     │
+                                                     ▼
+                                    kairos_supervisor.py (auto-starts at login,
+                                    restarts the daemon if it ever dies)
+                                                     │
+                                                     ▼
+                                        kairos_daemon.py (60s poll loop)
+                                          checks what's due, catches up on
+                                          anything missed, dedupes, respects
+                                          quiet hours and snoozes
+                                                     │
+                                                     ▼
+                                     PyQt6 widget (heads-up / launched /
+                                     reminder / merged-multi), always-on-top,
+                                     dismissible, with a notification sound
 ```
 
-### Natural Language Parsing
+The daemon and the widget layer run on separate threads — the daemon does I/O and scheduling math in the background, while Qt's event loop owns the main thread, so a widget being on screen never blocks the scheduler from doing its job.
 
-```
-kairos parse                               Open editor for multi-line input
-kairos parse --file <path>                 Parse from a text file directly
-```
+---
 
-`kairos parse` opens your system text editor to type session descriptions
-in plain English, one clause per line. It respects `$VISUAL`, then `$EDITOR`,
-and falls back to Notepad on Windows. Save and close the editor to see the
-structured breakdown, then confirm to save it as a new or existing session.
-
-The parser detects **recurrence** from phrases like `every day`, `every Mon/Wed/Fri`,
-`every weekday`, `weekend`, or `on boot`/`bootup`/`at startup`, and populates the
-session's schedule field automatically — no separate `kairos schedule` call needed.
-If a line has a time but no recurrence phrase, you'll be prompted to specify once,
-daily, or choose specific weekdays during the confirmation step.
-
-Recurrence phrases live in `~/.kairos/recurrence_phrases.json` (same pattern as
-`app_mapping.json`) — user-editable without touching Python code.
-
-Pipe input directly (no editor):
-```
-echo -e "open vscode at 7 pm\nremind me to check email" | kairos parse
-```
-
-Example input saved in the editor:
-```
-Open vscode at 7 pm
-Remind me to get a haircut every day at 7pm
-Open vscode every Mon Wed Fri at 9am
-Bootup reminder regarding GitHub check
-play youtube : https://youtube.com/watch?v=xyz at 6pm reminder
-```
-
-### Analytics
-
-```
-kairos stats <name>                        Show run/skip/miss stats
-kairos config --quiet HH:MM-HH:MM         Set quiet hours
-```
-
-## Daemon
-
-Run the daemon in the background:
-
-```bash
-python kairos_daemon.py           # Start the daemon
-python kairos_daemon.py --register   # Register for auto-start on login
-python kairos_daemon.py --unregister # Remove auto-start
-```
-
-Use `pythonw.exe` (no console window) for background operation. The daemon:
-- Enforces single-instance via a lock file
-- Shows a tray icon (via pystray)
-- Checks for due sessions every 60 seconds
-- Triggers heads-up 5 minutes before a scheduled session
-- Catches up on missed sessions on startup
-- Displays PyQt6 on-screen widgets for heads-up, launch, and reminders
-
-## Configuration
-
-Configuration files are stored under `~/.kairos/`:
-
-| File | Purpose |
-|------|---------|
-| Variable / File | Purpose |
-|----------------|---------|
-| `$VISUAL` / `$EDITOR` | Editor used by `kairos parse` (default: Notepad) |
-| `sessions/<name>.json` | Session definitions |
-| `app_mapping.json` | Keyword-to-app mapping for NLP |
-| `recurrence_phrases.json` | Recurrence phrase patterns (daily, weekdays, etc.) |
-| `stopwords.txt` | Filler words stripped during NLP |
-| `quiet_hours.json` | Quiet hours configuration |
-| `kairos.db` | Session history/analytics |
-| `logs/daemon.log` | Rotating daemon logs |
-
-## Project Structure
+## Project structure
 
 ```
 kairos/
   kairos/
-    __init__.py
-    __main__.py
-    cli.py              # CLI commands
-    models.py           # Pydantic data models
-    storage.py          # JSON read/write with atomic operations
-    launcher.py         # App launch dispatch table
-    config.py           # Paths, constants
-    nlp.py              # Rule-based natural language parsing
-    daemon.py           # Background scheduler and daemon logic
-    widget.py           # PyQt6 on-screen widgets
-    analytics.py        # Session history/stats
-  kairos_daemon.py      # Daemon entry point
-  tests/
-    test_storage.py
-    test_launcher.py
-    test_daemon.py
-    test_nlp.py
-    test_cli.py
-  pyproject.toml
-  README.md
+    cli.py          # all CLI commands
+    models.py        # pydantic session/schedule/todo models
+    storage.py        # atomic JSON read/write
+    launcher.py        # app-launch dispatch table
+    nlp.py             # rule-based natural language parser
+    daemon.py           # scheduler, catch-up, quiet hours, dedup
+    widget.py            # PyQt6 widgets and animations
+    analytics.py           # run/skip/completion stats
+  kairos_daemon.py     # daemon entry point
+  kairos_supervisor.py  # self-healing supervisor (auto-restart on crash)
+  tests/                  # unit + regression test suite
 ```
 
-## App Types Supported
+---
 
-- `code` -- VS Code (`code` on PATH)
-- `terminal` -- Windows Terminal (`wt` on PATH)
-- `chrome` -- Google Chrome
-- `spotify` -- Spotify
+## Design philosophy
 
-Extend by adding a handler function in `launcher.py` and adding it to the `DISPATCH` dict.
+Kairos deliberately avoids anything resembling an AI assistant guessing at your intentions. The natural-language parser is a transparent, rule-based pipeline (time extraction, keyword classification, recurrence detection) — not a model — and it always shows you exactly what it parsed before saving anything. If you want to know why a session fired at a given time, the answer is always in a config file you can open and read, not a black box.
 
-## Testing
+---
 
-```bash
-pytest tests/
-```
+## Status
+
+Actively developed as a personal daily-driver tool. Contributions, issues, and suggestions are welcome.
+
+## License
+
+MIT
