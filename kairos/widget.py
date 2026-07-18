@@ -363,7 +363,10 @@ class MultiWidget(WidgetBase):
 
 class SlidingWidget(QWidget):
     """Wrapper that provides slide-in/out animation for a WidgetBase.
-    Supports stacking: dimmed opacity and y-offset for positions > 0."""
+    Supports stacking: dimmed opacity for back widgets.
+    Enforces always-on-top z-order via periodic raise_()."""
+
+    _Z_TIMER_INTERVAL_MS = 2000
 
     def __init__(self, inner: WidgetBase, stack_index: int = 0):
         super().__init__(
@@ -381,17 +384,20 @@ class SlidingWidget(QWidget):
         self.setStyleSheet(f"background: {_BG}; border: 1px solid {_BORDER}; border-radius: {_CORNER}px;")
 
         self.adjustSize()
-        screen = QApplication.primaryScreen().availableGeometry()
-        self._target_x = screen.right() - self.width() - _PAD
-        self._target_y = self._compute_y(stack_index)
-        self.move(screen.right(), self._target_y)
+        # Start off-screen — WidgetManager positions via _position_widget / _reposition_all
+        self.move(QApplication.primaryScreen().availableGeometry().right(), 0)
 
         self._anim = QPropertyAnimation(self, b"offset")
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
 
-    def _compute_y(self, index: int) -> int:
-        screen = QApplication.primaryScreen().availableGeometry()
-        return screen.bottom() - self.height() - 48 - (_PAD * index)
+        self._z_timer = QTimer(self)
+        self._z_timer.setInterval(self._Z_TIMER_INTERVAL_MS)
+        self._z_timer.timeout.connect(self._raise_to_top)
+
+    def _raise_to_top(self):
+        self.raise_()
+        if self.isVisible():
+            self.activateWindow()
 
     def get_offset(self):
         return self._offset
@@ -405,6 +411,8 @@ class SlidingWidget(QWidget):
 
     def show_slide_in(self):
         self.show()
+        self.raise_()
+        self._z_timer.start()
         self._anim.stop()
         self._anim.setDuration(250)
         self._anim.setStartValue(0)
@@ -412,6 +420,7 @@ class SlidingWidget(QWidget):
         self._anim.start()
 
     def slide_out(self):
+        self._z_timer.stop()
         self._anim.stop()
         self._anim.setEasingCurve(QEasingCurve.Type.InCubic)
         self._anim.setDuration(200)
@@ -421,18 +430,21 @@ class SlidingWidget(QWidget):
         self._anim.start()
 
     def _on_out_done(self):
+        self._z_timer.stop()
         self.close()
         self.deleteLater()
 
-    def set_stack_position(self, index: int):
-        """Apply dimming for stack index (does NOT reposition).
-        Enforces a legibility floor of 0.6 — no widget is ever dimmed below this."""
+    def set_stack_position(self, index: int, count: int):
+        """Apply dimming based on position in stack.
+        Frontmost widget (index == count - 1) gets full opacity;
+        back widgets get 0.6 (legibility floor)."""
         self.stack_index = index
-        opacity = 1.0 if index == 0 else 0.6
+        is_front = index == count - 1
+        opacity = 1.0 if is_front else 0.6
         self.setWindowOpacity(opacity)
         self.setAttribute(
             Qt.WidgetAttribute.WA_TransparentForMouseEvents,
-            index != 0,
+            not is_front,
         )
 
 
@@ -440,11 +452,17 @@ class SlidingWidget(QWidget):
 
 
 class CollapsedOverlay(QFrame):
-    """Small pill-shaped overlay shown when widgets are collapsed beyond the cap."""
+    """Small pill-shaped overlay shown when widgets are collapsed beyond the cap.
+    Shares the same always-on-top window flags and z-order enforcement."""
     expand_requested = pyqtSignal()
 
     def __init__(self, count: int, parent=None):
-        super().__init__(parent)
+        super().__init__(
+            parent,
+            flags=Qt.WindowType.WindowStaysOnTopHint
+            | Qt.WindowType.FramelessWindowHint
+            | Qt.WindowType.Tool,
+        )
         self.setFixedWidth(_W)
         self.setFixedHeight(36)
         layout = QHBoxLayout(self)
@@ -463,6 +481,24 @@ class CollapsedOverlay(QFrame):
             f"QFrame {{ background: {_BG}; border: 1px solid {_BORDER};"
             f" border-radius: {_CORNER}px; }}"
         )
+
+        self._z_timer = QTimer(self)
+        self._z_timer.setInterval(2000)
+        self._z_timer.timeout.connect(self._raise_to_top)
+
+    def _raise_to_top(self):
+        self.raise_()
+        if self.isVisible():
+            self.activateWindow()
+
+    def show(self):
+        super().show()
+        self.raise_()
+        self._z_timer.start()
+
+    def hide(self):
+        self._z_timer.stop()
+        super().hide()
 
     def set_count(self, n: int):
         self._label.setText(f"+{n} more")
@@ -550,8 +586,9 @@ class WidgetManager(QObject):
         x = screen.right() - _W - _PAD
         base_y = screen.bottom() - 48
         cumulative = 0
+        count = len(self._active_stack)
         for i, sw in enumerate(self._active_stack):
-            sw.set_stack_position(i)
+            sw.set_stack_position(i, count)
             h = sw.inner.height()
             y = base_y - h - cumulative
             sw._target_y = y
@@ -636,7 +673,11 @@ class WidgetManager(QObject):
         self._push_widget(inner)
 
     def _push_widget(self, inner: WidgetBase):
-        winsound.MessageBeep(winsound.MB_OK)
+        try:
+            winsound.MessageBeep(winsound.MB_OK)
+            logger.debug("Notification sound played for %s", type(inner).__name__)
+        except Exception:
+            logger.warning("Failed to play notification sound", exc_info=True)
         inner.closed.connect(self._on_inner_closed)
 
         if len(self._active_stack) >= self._MAX_VISIBLE:
@@ -740,9 +781,10 @@ class WidgetManager(QObject):
         widget._target_y = screen.bottom() - 48 - widget.inner.height() - cumulative
         widget.move(screen.right(), widget._target_y)
         # Dim all existing widgets behind the new one
+        count = len(self._active_stack)
         for i, sw in enumerate(self._active_stack):
             if sw is not widget:
-                sw.set_stack_position(i)
+                sw.set_stack_position(i, count)
 
     def _dismiss_frontmost(self):
         if not self._active_stack:

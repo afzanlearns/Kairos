@@ -8,6 +8,7 @@ for the exact #primary, #primary:hover, #primary:pressed rules.
 """
 
 import sys
+import unittest.mock
 import pytest
 from PyQt6.QtWidgets import QApplication, QPushButton, QLabel
 
@@ -144,6 +145,7 @@ class TestStacking:
         mgr.stop()
 
     def test_back_widgets_have_lower_opacity(self, qapp):
+        """Frontmost (newest) widget gets full opacity; back widgets dim to 0.6."""
         from kairos.models import Session
         from kairos.widget import (
             WidgetManager, _GAP_STACK,
@@ -156,7 +158,7 @@ class TestStacking:
         mgr._process_queue()
 
         inner0 = HeadsUpWidget(
-            Session(name="front"), on_open_now=lambda w: None, on_snooze=lambda w: None,
+            Session(name="oldest"), on_open_now=lambda w: None, on_snooze=lambda w: None,
         )
         sw0 = SlidingWidget(inner0, stack_index=0)
         mgr._active_stack.append(sw0)
@@ -165,15 +167,17 @@ class TestStacking:
         sw1 = SlidingWidget(inner1, stack_index=1)
         mgr._active_stack.append(sw1)
 
-        inner2 = LaunchedWidget(Session(name="back", todo_items=[{"text": "y"}, {"text": "z"}]))
+        inner2 = LaunchedWidget(Session(name="newest", todo_items=[{"text": "y"}, {"text": "z"}]))
         sw2 = SlidingWidget(inner2, stack_index=2)
         mgr._active_stack.append(sw2)
 
         mgr._reposition_all()
 
-        assert sw0.windowOpacity() == pytest.approx(1.0, abs=0.01), "Frontmost should be full opacity"
-        assert sw1.windowOpacity() == pytest.approx(0.6, abs=0.01), "Back widgets should be 0.6 opacity (legibility floor)"
-        assert sw2.windowOpacity() == pytest.approx(0.6, abs=0.01), "Back widgets should be 0.6 opacity (legibility floor)"
+        # Frontmost (sw2, last in list) should be full opacity
+        assert sw2.windowOpacity() == pytest.approx(1.0, abs=0.01), "Frontmost (newest) should be full opacity"
+        # Back widgets dim to 0.6
+        assert sw1.windowOpacity() == pytest.approx(0.6, abs=0.01), "Middle widget should be 0.6 opacity"
+        assert sw0.windowOpacity() == pytest.approx(0.6, abs=0.01), "Oldest widget should be 0.6 opacity"
 
         for sw in mgr._active_stack:
             sw.close()
@@ -210,6 +214,84 @@ class TestStacking:
         for sw in mgr._active_stack:
             sw.close()
         mgr.stop()
+
+    def test_stacking_positions_are_deterministic(self, qapp):
+        """Widget positions form a consistent, predictable offset pattern
+        from the bottom-right anchor, run to run."""
+        from kairos.models import Session
+        from kairos.widget import (
+            WidgetManager, _GAP_STACK, _W, _PAD,
+            SlidingWidget, HeadsUpWidget, LaunchedWidget,
+        )
+
+        mgr = WidgetManager()
+        mgr.start()
+        mgr.mark_ready()
+        mgr._process_queue()
+
+        inner0 = HeadsUpWidget(
+            Session(name="a"), on_open_now=lambda w: None, on_snooze=lambda w: None,
+        )
+        sw0 = SlidingWidget(inner0, stack_index=0)
+        mgr._active_stack.append(sw0)
+
+        inner1 = LaunchedWidget(Session(name="b"))
+        sw1 = SlidingWidget(inner1, stack_index=1)
+        mgr._active_stack.append(sw1)
+
+        mgr._reposition_all()
+
+        screen = QApplication.primaryScreen().availableGeometry()
+        anchor_x = screen.right() - _W - _PAD
+        base_y = screen.bottom() - 48
+
+        # Both widgets should have the same x (right-aligned)
+        assert sw0._target_x == anchor_x, f"sw0 x {sw0._target_x} != anchor {anchor_x}"
+        assert sw1._target_x == anchor_x, f"sw1 x {sw1._target_x} != anchor {anchor_x}"
+
+        # sw0 (oldest) is at bottom; sw1 is above it by sw0's height + gap
+        expected_y0 = base_y - sw0.inner.height()
+        assert sw0._target_y == expected_y0, (
+            f"sw0 y {sw0._target_y} != expected {expected_y0}"
+        )
+        expected_y1 = base_y - sw1.inner.height() - sw0.inner.height() - _GAP_STACK
+        assert sw1._target_y == expected_y1, (
+            f"sw1 y {sw1._target_y} != expected {expected_y1}"
+        )
+
+        # Run twice — positions must be identical
+        mgr._reposition_all()
+        assert sw0._target_y == expected_y0, "Position changed after second _reposition_all"
+        assert sw1._target_y == expected_y1, "Position changed after second _reposition_all"
+
+        for sw in mgr._active_stack:
+            sw.close()
+        mgr.stop()
+
+    def test_notification_sound_plays_once_per_widget(self, qapp):
+        """winsound.MessageBeep is called once for each widget shown, not skipped."""
+        from kairos.models import Session
+        from kairos.widget import WidgetManager, HeadsUpWidget
+
+        with unittest.mock.patch("kairos.widget.winsound.MessageBeep") as mock_beep:
+            mgr = WidgetManager()
+            mgr.start()
+            mgr.mark_ready()
+            mgr._process_queue()
+
+            s1 = Session(name="a")
+            s2 = Session(name="b")
+            mgr._push_widget(HeadsUpWidget(
+                s1, on_open_now=lambda w: None, on_snooze=lambda w: None,
+            ))
+            mgr._push_widget(HeadsUpWidget(
+                s2, on_open_now=lambda w: None, on_snooze=lambda w: None,
+            ))
+
+            assert mock_beep.call_count == 2, (
+                f"Expected 2 beeps for 2 widgets, got {mock_beep.call_count}"
+            )
+            mgr.stop()
 
     def test_collapse_beyond_cap(self, qapp):
         """3rd widget push collapses into '+N more' overlay; only 2 visible."""
