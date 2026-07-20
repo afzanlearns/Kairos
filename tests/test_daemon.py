@@ -10,12 +10,14 @@ from kairos.daemon import get_due_sessions
 
 def _session(name: str, time: str | None = None, days: list[str] | None = None,
              on_boot: bool = False, last_run: str | None = None,
-             history: list[SessionLog] | None = None) -> Session:
+             history: list[SessionLog] | None = None,
+             completed: bool = False) -> Session:
     return Session(
         name=name,
         schedule=ScheduleConfig(time=time, days=days or [], on_boot=on_boot),
         last_run=last_run,
         history=history or [],
+        completed=completed,
     )
 
 
@@ -217,3 +219,45 @@ class TestSnooze:
         # Verify evening is not affected
         evening_key = f"evening_heads_up_{now.strftime('%Y-%m-%d')}"
         assert evening_key not in daemon._snoozed_until
+
+
+class TestCompleted:
+    """Completed once-sessions must never re-fire."""
+
+    def test_completed_once_session_never_due(self):
+        now = datetime(2026, 7, 17, 9, 0, 0)
+        s = _session("once", time="09:00", last_run="2026-07-16T09:00:00",
+                     completed=True)
+        due = get_due_sessions([s], now, QuietHoursConfig(), set())
+        assert len(due) == 0
+
+    def test_completed_once_session_not_due_different_day(self):
+        """A completed once-session must not fire on a subsequent day."""
+        now = datetime(2026, 7, 18, 9, 0, 0)
+        s = _session("once", time="09:00", last_run="2026-07-17T09:00:00",
+                     completed=True)
+        due = get_due_sessions([s], now, QuietHoursConfig(), set())
+        assert len(due) == 0
+
+    def test_completed_recurring_session_never_due(self):
+        """Even a recurring session with completed=True is permanently blocked."""
+        now = datetime(2026, 7, 17, 9, 0, 0)
+        s = _session("recurring", time="09:00", days=["fri"],
+                     completed=True)
+        due = get_due_sessions([s], now, QuietHoursConfig(), set())
+        assert len(due) == 0
+
+    def test_uncompleted_once_session_still_fires(self):
+        """A once-session without completed=True still fires normally."""
+        now = datetime(2026, 7, 17, 9, 0, 0)
+        s = _session("once", time="09:00")
+        due = get_due_sessions([s], now, QuietHoursConfig(), set())
+        assert any(e.session_name == "once" and e.kind == "launch" for e in due)
+
+    def test_completed_once_not_affected_by_last_run_today(self):
+        """completed=True takes priority even if last_run is today (adds safety)."""
+        now = datetime(2026, 7, 17, 9, 0, 0)
+        s = _session("once", time="09:00", last_run="2026-07-17T08:00:00",
+                     completed=True)
+        due = get_due_sessions([s], now, QuietHoursConfig(), set())
+        assert len(due) == 0
