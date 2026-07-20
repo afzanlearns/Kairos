@@ -42,6 +42,7 @@ class Session(BaseModel):
     last_run: Optional[str] = None
     created_at: str = Field(default_factory=lambda: datetime.now().isoformat(timespec="seconds"))
     history: list[SessionLog] = []
+    completed: bool = False
 
 
 class QuietHoursConfig(BaseModel):

@@ -72,6 +72,8 @@ def get_due_sessions(
         return due
 
     for session in sessions:
+        if session.completed:
+            continue
 
         schedule = session.schedule
         run_today = session.last_run is not None and session.last_run.startswith(today_str)
@@ -492,6 +494,8 @@ class Daemon:
         sessions = self._load_all_sessions()
 
         for session in sessions:
+            if session.completed:
+                continue
             if not session.schedule.time:
                 continue
             # Only catch up repeating sessions (have days set).
@@ -518,6 +522,8 @@ class Daemon:
 
         # Boot sessions
         for session in sessions:
+            if session.completed:
+                continue
             if session.schedule.on_boot:
                 boot_fired = any(
                     h.date == now.strftime("%Y-%m-%d") and h.status == "launched" for h in session.history
@@ -601,6 +607,8 @@ class Daemon:
             launch_session(session.name, session.apps)
 
         session.last_run = datetime.now().isoformat(timespec="seconds")
+        if not session.schedule.days and not session.schedule.on_boot:
+            session.completed = True
         session.history.append(SessionLog(
             date=datetime.now().strftime("%Y-%m-%d"),
             status="launched",
